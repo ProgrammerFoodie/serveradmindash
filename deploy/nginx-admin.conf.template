@@ -1,0 +1,66 @@
+# https://@DOMAIN@: the server admin dashboard, reachable only from the owner's Tailscale devices.
+# Installed as /etc/nginx/sites-available/admin (see deploy/install-admin.sh).
+
+# Only these client addresses get through. Tailscale addresses are stable per device, so listing
+# a few devices is stricter than allowing the whole tailnet (100.64.0.0/10 and fd7a:115c:a1e0::/48).
+geo $admin_allowed {
+    default                       0;
+@ALLOWED_DEVICES@
+}
+
+# Throttle sign-in attempts (POST /login) per client address. An empty key is not limited,
+# so opening the login page or using the dashboard never counts.
+map $request_method $admin_login_key {
+    POST    $binary_remote_addr;
+    default "";
+}
+limit_req_zone $admin_login_key zone=admin_login:1m rate=10r/m;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name @DOMAIN@;
+
+    # Let's Encrypt renewals
+    location /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+    }
+
+    location / {
+        if ($admin_allowed) {
+            return 301 https://@DOMAIN@$request_uri;
+        }
+        return 444;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name @DOMAIN@;
+
+    ssl_certificate     /etc/letsencrypt/live/@DOMAIN@/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/@DOMAIN@/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # Anyone else: close the connection without a response.
+    if ($admin_allowed = 0) {
+        return 444;
+    }
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    access_log /var/log/nginx/admin.access.log;
+    client_max_body_size 16k;
+
+    location = /login {
+        limit_req zone=admin_login burst=5 nodelay;
+        limit_req_status 429;
+        include /etc/nginx/snippets/admin-proxy.conf;
+    }
+
+    location / {
+        include /etc/nginx/snippets/admin-proxy.conf;
+    }
+}

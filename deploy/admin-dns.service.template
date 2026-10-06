@@ -1,0 +1,31 @@
+[Unit]
+Description=Split-DNS responder: @DOMAIN@ -> Tailscale address
+Documentation=file:///mnt/Extra20/admin/PLAN.md
+# Not ordered after tailscaled: the responder binds with IP_FREEBIND, so it starts fine before tailscale0 exists.
+After=network.target
+RequiresMountsFor=/mnt/Extra20
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /mnt/Extra20/admin/dnsd/admin_dns.py --name @DOMAIN@ --bind @TAILSCALE_IP@ --a @TAILSCALE_IP@
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+Restart=always
+RestartSec=3
+# Unprivileged: a throwaway user that may do exactly one privileged thing, listen on port 53.
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+MemoryMax=48M
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

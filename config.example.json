@@ -1,0 +1,23 @@
+{
+  "listen": "127.0.0.1:9100",
+  "public_host": "admin.example.com",
+  "auth": { "username": "admin", "password_hash": "", "session_hours": 720 },
+  "telegram": { "bot_token": "", "chat_id": "", "enabled": true },
+  "watch": {
+    "systemd": ["nginx", "app1", "app2", "redis-server", "supervisor", "smbd",
+                "ssh", "tailscaled", "fail2ban", "cron", "chrony",
+                "server-dashboard", "admin-dns"],
+    "supervisor": "auto",
+    "protected": ["ssh", "tailscaled", "nginx", "server-dashboard", "admin-dns"]
+  },
+  "thresholds": {
+    "cpu_pct":       { "warn": 85,  "crit": 95,  "for_s": 300 },
+    "mem_avail_pct": { "warn": 15,  "crit": 7,   "for_s": 120 },
+    "swap_pct":      { "warn": 70,  "crit": 90,  "for_s": 300 },
+    "disk_pct":      { "warn": 90,  "crit": 95 },
+    "inode_pct":     { "warn": 85,  "crit": 95 },
+    "ssl_days":      { "warn": 14,  "crit": 5 },
+    "load_per_core": { "warn": 2.0, "crit": 4.0, "for_s": 300 }
+  },
+  "alerts": { "repeat_minutes": 60, "notify_recovery": true, "notify_logins": true, "server_name": "" }
+}

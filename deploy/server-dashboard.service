@@ -1,0 +1,29 @@
+[Unit]
+Description=Server admin dashboard
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/mnt/Extra20
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/Extra20/admin
+ExecStart=/usr/bin/python3 -m dashboard serve
+# Root is needed to kill any process, restart services and read the fail2ban and supervisor sockets.
+User=root
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+Nice=10
+IOSchedulingClass=idle
+# The app is ~20 MB; the rest is room for `apt list`, which briefly needs about 80 MB.
+MemoryMax=192M
+OOMPolicy=continue
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/mnt/Extra20/admin/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+# Real config holds the password hash and Telegram token
+config.json
+# Runtime data: history.db, audit log
+data/
+__pycache__/
+*.pyc
+
+# This server's private deployment values (domain, addresses, allowed devices)
+deploy/local.env
+deploy/allowed-devices.txt

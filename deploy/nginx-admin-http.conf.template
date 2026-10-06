@@ -1,0 +1,15 @@
+# Stage 1 for https://@DOMAIN@: port 80 only, so Let's Encrypt can validate the name.
+# Everything except the challenge path gets the connection closed.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name @DOMAIN@;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+    }
+
+    location / {
+        return 444;
+    }
+}

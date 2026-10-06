@@ -1,0 +1,9 @@
+body.login { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+form#f { width: 100%; max-width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; display: grid; gap: 14px; }
+form#f h1 { font-size: 20px; margin-bottom: 4px; }
+form#f label { display: grid; gap: 4px; color: var(--dim); font-size: 13px; }
+form#f input { font: inherit; padding: 10px 12px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+form#f input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+form#f button { padding: 10px 14px; background: var(--accent); color: #06101f; border: 0; border-radius: 8px; font-weight: 600; cursor: pointer; }
+form#f button:disabled { opacity: .6; cursor: wait; }
+#msg { margin: 0; min-height: 1.4em; color: var(--crit); font-size: 13px; }

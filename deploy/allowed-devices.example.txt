@@ -1,0 +1,3 @@
+# Copy to allowed-devices.txt (git-ignored). Tailscale addresses that may open the dashboard, one per line:
+100.64.0.2     # laptop
+100.64.0.3     # phone

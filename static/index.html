@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0d1117">
+<title>Server admin</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-row">
+    <h1 class="brand">Server admin <small id="who"></small></h1>
+    <span class="spacer"></span>
+    <span class="status" id="status" role="status"><span class="dot" id="status-dot"></span><span class="label" id="status-text">connecting…</span></span>
+    <button class="btn" id="signout" type="button">Sign out</button>
+  </div>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Sections"></nav>
+</header>
+<div class="statusbar" id="statusbar" hidden></div>
+<main id="view" aria-live="off"></main>
+<dialog id="dlg"></dialog>
+<dialog id="confirm" aria-labelledby="confirm-title"></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<noscript><p class="empty">This dashboard needs JavaScript.</p></noscript>
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
