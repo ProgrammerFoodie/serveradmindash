@@ -6,6 +6,16 @@ The full build plan and design are in [PLAN.md](PLAN.md).
 
 The code lives in a private GitHub repository, `ProgrammerFoodie/serveradmindash`. The server pushes with a deploy key limited to that repository (private key `~/.ssh/server_admin_dashboard_deploy_2`, set as `core.sshCommand` in `.git/config`, so `git push` also works as root). Never commit `config.json` or `data/`; both are in `.gitignore`.
 
+## Screenshots
+
+IP addresses are blurred.
+
+| Users | Services |
+|---|---|
+| ![Users tab](docs/images/users.png) | ![Services tab](docs/images/services.png) |
+
+![Agents tab](docs/images/agents.png)
+
 ## Status
 
 Built, installed and verified on 2026-10-06, including a reboot.
