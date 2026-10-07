@@ -3,7 +3,27 @@
 Adds to the dashboard: **reboot and "restart all services"**, **users and active sessions** with account management,
 **SSH keys** (view, add, remove, reveal private keys) and an **editable config viewer**. No web terminal: the dashboard stays terminal-less.
 
-Status: planned, not started. Decisions below were made by the owner on 2026-10-07.
+Status: **phase 13 done** (2026-10-07); phases 14-19 not started. Decisions below were made by the owner on 2026-10-07.
+
+### Phase 13: what was built, and how it differs from the text below
+- `config.json` `admin` block with the five switches (`dashboard/config.py`: `ADMIN_SWITCHES`, `admin_switches()`). Missing means off,
+  only a real `true` turns a tool on, anything else in the block is a config error. `App.require_feature(name)` answers 404 for a
+  tool that is off. `/api/session` reports `admin: {...}`. Later phases add their own keys (`restart_order`, `configs`) to the validator.
+- `dashboard/safefs.py`: `open_in_home`, `read_in_home`, `ensure_dir`, `atomic_write`, `backup`, `list_backups`. Refuses symlinks,
+  hard links, FIFOs, files of other users and group/world-writable folders. `ensure_dir` is an addition: phase 17 needs it to create `~/.ssh`.
+- `dashboard/jobs.py` plus `Actions.run_job(kind, body, who, work)`: a job holds the one-action-at-a-time lock until it ends and is
+  audited and announced like any action. `GET /api/jobs/<id>` (session only; ids are 16 hex characters).
+- `Actions.register(kind, handler, label)`: later phases add their actions through this, so they inherit the lock, rate limit, audit
+  entry and Telegram message. Also `actions.clean()` (printable one-liners) and `actions.require_confirmation(body, expected)`
+  (the server-side check of a typed word; a wrong or missing word is a 400).
+- Telegram/audit: no new code was needed; `register` and `run_job` go through the existing `_report`.
+- Page: `static/js/confirm.js` (`ctx.confirm` as before, plus `ctx.confirmTyped({word, ...})`: the confirm button stays disabled until
+  the word is typed, Enter cannot confirm a wrong word, Cancel keeps the focus in the plain variant).
+- Service unit: `ProtectHome=no` and `ReadWritePaths=/mnt/Extra20/admin/data /etc /home /root -/var/spool/cron -/var/mail`
+  (a test pins this list). `install-admin.sh service` now **restarts** the service (it used `enable --now`, which does not restart a
+  running service, so new unit settings would never have applied).
+- To apply on the server (as root): `cd /mnt/Extra20/admin && deploy/install-admin.sh service`. Phase 13 has no visible feature;
+  add the `admin` block to the real `config.json` when the first admin tool exists.
 
 ## Decisions
 

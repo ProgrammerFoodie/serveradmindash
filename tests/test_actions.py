@@ -56,6 +56,122 @@ class FakeAlerts:
         return True
 
 
+class FoundationTest(unittest.TestCase):
+    """What the admin tools of later phases build on: registered actions, background jobs, typed confirmation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.audit = Audit(os.path.join(self.tmp.name, "audit.jsonl"))
+        self.events = []
+        alerts = FakeAlerts([])
+        alerts.events = self.events
+        self.acts = Actions(CFG, FakeScheduler([]), alerts, self.audit, runner=lambda *a, **k: "")
+
+    def entries(self):
+        return self.audit.tail(50)
+
+    def test_a_registered_action_is_audited_and_announced_like_the_built_in_ones(self):
+        self.acts.register("demo", lambda body: {"detail": "did it"}, lambda body: {"action": "demo.run", "target": body["what"]})
+        self.assertEqual(self.acts.perform("demo", {"what": "thing"}, WHO)["detail"], "did it")
+        e = self.entries()[0]
+        self.assertEqual((e["action"], e["target"], e["ok"], e["user"]), ("demo.run", "thing", True, "tester"))
+        self.assertIn("demo.run on thing", self.events[-1][1])
+
+    def test_a_refused_registered_action_is_audited_and_403_is_announced(self):
+        def handler(body):
+            raise ActionError(403, "not allowed")
+        self.acts.register("demo", handler, lambda body: {"action": "demo.run", "target": "t"})
+        with self.assertRaises(ActionError):
+            self.acts.perform("demo", {}, WHO)
+        self.assertEqual((self.entries()[0]["ok"], self.entries()[0]["detail"]), (False, "not allowed"))
+        self.assertEqual(self.events[-1][0], "warn")
+
+    def test_register_rejects_duplicates_and_a_broken_label_cannot_stop_auditing(self):
+        self.acts.register("demo", lambda body: {"detail": "x"}, lambda body: body["missing"])
+        with self.assertRaises(ValueError):
+            self.acts.register("demo", lambda body: {}, lambda body: {})
+        with self.assertRaises(ValueError):
+            self.acts.register("service", lambda body: {}, lambda body: {})
+        self.acts.perform("demo", {}, WHO)
+        self.assertEqual(self.entries()[0]["action"], "demo")
+
+    def test_labels_are_cleaned_for_the_audit_log_and_telegram(self):
+        self.acts.register("demo", lambda body: {"detail": "x"},
+                           lambda body: {"action": "demo.run", "target": "line1\nline2\x1b[0m " + "z" * 500})
+        self.acts.perform("demo", {}, WHO)
+        target = self.entries()[0]["target"]
+        self.assertNotIn("\n", target)
+        self.assertNotIn("\x1b", target)
+        self.assertLessEqual(len(target), 200)
+
+    def test_clean_and_require_confirmation(self):
+        self.assertEqual(act.clean("a\nb\tc\x00d", 10), "a b c d")
+        self.assertEqual(len(act.clean("x" * 500, 100)), 100)
+        act.require_confirmation({"confirm": "myhost"}, "myhost")
+        act.require_confirmation({"confirm": "  myhost \n"}, "myhost")
+        for bad in ({}, {"confirm": ""}, {"confirm": "MYHOST"}, {"confirm": "myhost2"}, {"confirm": None}, {"confirm": ["myhost"]}, {"confirm": 5}):
+            with self.assertRaises(ActionError, msg=repr(bad)) as raised:
+                act.require_confirmation(bad, "myhost")
+            self.assertEqual(raised.exception.status, 400)
+
+    def test_a_job_runs_in_the_background_holds_the_lock_and_is_audited(self):
+        release, started = threading.Event(), threading.Event()
+
+        def work(job):
+            job.step("working")
+            started.set()
+            release.wait(5)
+            return "all done"
+
+        self.acts.register("demo", lambda body: {"detail": "x"}, lambda body: {"action": "demo.job", "target": "t"})
+        job = self.acts.run_job("demo", {}, WHO, work)
+        self.assertTrue(started.wait(5))
+        self.assertEqual(self.acts.jobs.get(job.id)["state"], "running")
+        with self.assertRaises(ActionError) as busy:                         # nothing else may run meanwhile
+            self.acts.perform("demo", {}, WHO)
+        self.assertEqual(busy.exception.status, 409)
+        with self.assertRaises(ActionError) as busy_job:
+            self.acts.run_job("demo", {}, WHO, work)
+        self.assertEqual(busy_job.exception.status, 409)
+        release.set()
+        for _ in range(100):
+            if job.done and not self.acts._lock.locked():
+                break
+            threading.Event().wait(0.02)
+        d = self.acts.jobs.get(job.id)
+        self.assertEqual((d["state"], d["detail"], d["started_by"]), ("ok", "all done", "tester"))
+        self.assertEqual((self.entries()[0]["action"], self.entries()[0]["ok"], self.entries()[0]["detail"]), ("demo.job", True, "all done"))
+        self.assertEqual(self.acts.perform("demo", {}, WHO)["detail"], "x")        # the lock is free again
+
+    def run_to_end(self, work):
+        job = self.acts.run_job("demo", {}, WHO, work)
+        for _ in range(200):
+            if job.done and not self.acts._lock.locked():
+                break
+            threading.Event().wait(0.02)
+        return job.to_dict()
+
+    def test_a_job_that_raises_is_reported_and_releases_the_lock(self):
+        self.acts.register("demo", lambda body: {"detail": "x"}, lambda body: {"action": "demo.job", "target": "t"})
+
+        def refuses(job):
+            raise ActionError(403, "refused by rule")
+
+        d = self.run_to_end(refuses)
+        self.assertEqual((d["state"], d["detail"]), ("failed", "refused by rule"))
+        self.assertEqual((self.entries()[0]["ok"], self.entries()[0]["detail"]), (False, "refused by rule"))
+        self.assertEqual(self.events[-1][0], "warn")
+
+        def crashes(job):
+            raise RuntimeError("secret internals")
+
+        d = self.run_to_end(crashes)
+        self.assertEqual(d["state"], "failed")
+        self.assertNotIn("secret internals", str(d))                         # the message never reaches the page
+        self.assertFalse(self.acts._lock.locked())
+
+
 class Case(unittest.TestCase):
     def setUp(self):
         self.log = []

@@ -17,6 +17,32 @@ def tracked_files() -> list[Path]:
     return [ROOT / f for f in out.stdout.split() if (ROOT / f).is_file()]
 
 
+class ServiceUnitTest(unittest.TestCase):
+    """The dashboard runs as root, so how far its sandbox is open is worth pinning down."""
+
+    @staticmethod
+    def settings() -> dict:
+        lines = (DEPLOY / "server-dashboard.service").read_text().splitlines()
+        return dict(line.split("=", 1) for line in lines if "=" in line and not line.startswith("#"))
+
+    def test_the_sandbox_is_open_only_where_the_admin_tools_write(self):
+        s = self.settings()
+        self.assertEqual((s["ProtectSystem"], s["ProtectHome"], s["NoNewPrivileges"], s["PrivateTmp"]), ("strict", "no", "yes", "yes"))
+        writable = sorted(p.lstrip("-") for p in s["ReadWritePaths"].split())
+        self.assertEqual(writable, ["/etc", "/home", "/mnt/Extra20/admin/data", "/root", "/var/mail", "/var/spool/cron"])
+
+    def test_paths_that_may_not_exist_are_optional(self):
+        # without the "-" prefix systemd refuses to start the service on a machine that has no /var/mail
+        for path in self.settings()["ReadWritePaths"].split():
+            if path.lstrip("-") in ("/var/mail", "/var/spool/cron"):
+                self.assertTrue(path.startswith("-"), path)
+
+    def test_the_install_script_restarts_the_service_so_changes_apply(self):
+        script = (DEPLOY / "install-admin.sh").read_text()
+        self.assertIn("systemctl restart server-dashboard", script)
+        self.assertNotIn("enable --now server-dashboard", script)
+
+
 class RenderTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

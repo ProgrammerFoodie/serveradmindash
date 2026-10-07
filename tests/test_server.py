@@ -10,7 +10,8 @@ import unittest
 
 from dashboard import auth, config
 from dashboard.history import History
-from dashboard.server import App, make_server
+from dashboard.jobs import Jobs
+from dashboard.server import App, HttpError, make_server
 
 PASSWORD = "correct horse battery"
 _HASH = None
@@ -79,6 +80,7 @@ class FakeActions:
 
     def __init__(self):
         self.calls, self.error = [], None
+        self.jobs = Jobs()
         self.audit = type("A", (), {"tail": staticmethod(lambda limit: [{"action": "service.restart", "limit": limit}])})()
 
     def perform(self, kind, body, who):
@@ -465,6 +467,58 @@ class ActionApiTest(ServerTest):
         self.assertEqual((s["actions"], s["protected"]), (True, ["nginx", "ssh"]))
         self.assertEqual(self.req("GET", "/api/audit?limit=7", token=token)[2]["entries"][0]["limit"], 7)
         self.assertEqual(self.req("GET", "/api/audit?limit=99999", token=token)[2]["entries"][0]["limit"], 200)
+
+
+class JobApiTest(ServerTest):
+    def setUp(self):
+        self.actions = FakeActions()
+        super().setUp()
+
+    def test_a_job_can_be_read_with_a_session_only(self):
+        job = self.actions.jobs.create("demo", "demo thing", "tester")
+        job.step("first")
+        self.assertEqual(self.req("GET", f"/api/jobs/{job.id}")[0], 401)
+        token, _ = self.signed_in()
+        status, _, body = self.req("GET", f"/api/jobs/{job.id}", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual((body["state"], body["steps"][0]["label"], body["started_by"]), ("running", "first", "tester"))
+        job.finish(True, "ok")
+        self.assertEqual(self.req("GET", f"/api/jobs/{job.id}", token=token)[2]["state"], "ok")
+
+    def test_unknown_or_malformed_ids_are_404(self):
+        token, _ = self.signed_in()
+        for job_id in ("0" * 16, "../etc/passwd", "ABCDEF0123456789", "a" * 17, "", "%00"):
+            self.assertEqual(self.req("GET", f"/api/jobs/{job_id}", token=token)[0], 404, job_id)
+
+
+class JobApiWithoutActionsTest(ServerTest):
+    def test_jobs_do_not_exist_without_actions(self):
+        token, _ = self.signed_in()
+        self.assertEqual(self.req("GET", "/api/jobs/" + "0" * 16, token=token)[0], 404)
+
+
+class AdminSwitchTest(ServerTest):
+    def test_session_reports_every_switch_and_the_example_config_has_them_on(self):
+        token, _ = self.signed_in()
+        admin = self.req("GET", "/api/session", token=token)[2]["admin"]
+        self.assertEqual(sorted(admin), sorted(config.ADMIN_SWITCHES))
+        self.assertTrue(all(admin.values()))
+
+    def test_a_switched_off_tool_is_a_404_and_an_unknown_one_too(self):
+        self.app.admin = {"power": True, "users": False}
+        self.app.require_feature("power")
+        for name in ("users", "never_heard_of"):
+            with self.assertRaises(HttpError) as raised:
+                self.app.require_feature(name)
+            self.assertEqual((raised.exception.status, raised.exception.message), (404, "not found"))
+
+    def test_a_config_without_the_block_has_everything_off(self):
+        cfg = json.loads(config.EXAMPLE_PATH.read_text())
+        del cfg["admin"]
+        app = App(cfg, self.sched, self.history, self.sessions)
+        self.assertFalse(any(app.admin.values()))
+        with self.assertRaises(HttpError):
+            app.require_feature("power")
 
 
 class ActionsDisabledTest(ServerTest):

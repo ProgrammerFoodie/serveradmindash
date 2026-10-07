@@ -23,6 +23,7 @@ import time
 from collections import deque
 
 from .collectors.processes import PF_KTHREAD, unit_of
+from .jobs import Job, Jobs
 from .util import CommandError, read_text, run
 
 log = logging.getLogger("dashboard.actions")
@@ -42,6 +43,18 @@ class ActionError(Exception):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status, self.message = status, message
+
+
+def clean(value, limit: int = 100) -> str:
+    """One printable line of at most `limit` characters, for audit entries and Telegram messages."""
+    return "".join(c if c.isprintable() else " " for c in str(value))[:limit]
+
+
+def require_confirmation(body: dict, expected: str) -> None:
+    """The typed-confirmation check for dangerous actions. The page asks the person to type `expected`
+    (a host or user name); the server checks it again, because the page is not to be trusted."""
+    if not isinstance(body.get("confirm"), str) or body["confirm"].strip() != expected:
+        raise ActionError(400, f"confirmation does not match: type {expected}")
 
 
 def read_identity(pid: int) -> dict:
@@ -69,14 +82,69 @@ def own_pids() -> set[int]:
 
 
 class Actions:
-    def __init__(self, cfg: dict, scheduler, alerts, audit, runner=run, clock=time.time):
+    def __init__(self, cfg: dict, scheduler, alerts, audit, runner=run, clock=time.time, jobs: Jobs | None = None):
         self.cfg, self.scheduler, self.alerts, self.audit = cfg, scheduler, alerts, audit
         self._run, self._clock = runner, clock
+        self.jobs = jobs or Jobs(clock=clock)
+        self._handlers = {"service": self._service, "process": self._process}
+        self._labels = {}                                    # kind -> function(body) -> {"action", "target"}; services and processes use _label
         self.protected = set(cfg["watch"]["protected"]) | ALWAYS_PROTECTED
         self._lock = threading.Lock()
         self._recent: deque = deque()
 
     # ---- entry point -----------------------------------------------------------------------
+
+    def register(self, kind: str, handler, label) -> None:
+        """Add a kind of action. `handler(body)` returns {"detail": text, ...} or raises ActionError;
+        `label(body)` returns {"action", "target"} for the audit log, built only from values that are safe to print
+        (never a password, key or file content). Everything registered gets the lock, the rate limit, the audit
+        entry and the Telegram message that services and processes get."""
+        if kind in self._handlers:
+            raise ValueError(f"action kind already registered: {kind}")
+        self._handlers[kind], self._labels[kind] = handler, label
+
+    def _label_for(self, kind: str, body: dict) -> dict:
+        try:
+            label = self._labels[kind](body) if kind in self._labels else self._label(kind, body)
+            return {"action": clean(label["action"], 64), "target": clean(label["target"], 200)}
+        except Exception:  # noqa: BLE001 - a broken label must never stop the action from being audited
+            log.exception("label for %s failed", kind)
+            return {"action": clean(kind, 64), "target": ""}
+
+    def run_job(self, kind: str, body: dict, who: dict, work) -> Job:
+        """Start a long operation in the background and return its Job at once.
+
+        `work(job)` runs on its own thread and reports progress with job.step(...). It may return a detail
+        string, or raise ActionError. The one-action-at-a-time lock is held until it finishes, so nothing
+        else can be started meanwhile (and a second job is refused with 409).
+        """
+        if not self._lock.acquire(blocking=False):
+            raise ActionError(409, "another action is still running; wait a moment")
+        try:
+            self._rate_limit()
+            label = self._label_for(kind, body)
+            job = self.jobs.create(kind, f"{label['action']} {label['target']}".strip(), who["user"])
+        except BaseException:
+            self._lock.release()
+            raise
+
+        def runner():
+            ok, outcome, status = False, "internal error", 500
+            try:
+                outcome = work(job) or "done"
+                ok, status = True, 200
+            except ActionError as e:
+                outcome, status = e.message, e.status
+            except Exception as e:  # noqa: BLE001 - an unexpected bug must still be audited and reported cleanly
+                log.exception("job %s crashed", label)
+                outcome = f"internal error: {type(e).__name__}"
+            finally:
+                job.finish(ok, outcome)
+                self._report(who, label, ok=ok, outcome=outcome, status=status)
+                self._lock.release()
+
+        threading.Thread(target=runner, name=f"job-{job.id}", daemon=True).start()
+        return job
 
     def perform(self, kind: str, body: dict, who: dict) -> dict:
         """Run one action. `who` is {"user", "ip"}. Raises ActionError for anything refused or failed."""
@@ -84,10 +152,10 @@ class Actions:
             raise ActionError(409, "another action is still running; wait a moment")
         try:
             self._rate_limit()
-            handler = {"service": self._service, "process": self._process}.get(kind)
+            handler = self._handlers.get(kind)
             if handler is None:
                 raise ActionError(400, "unknown action")
-            label = self._label(kind, body)
+            label = self._label_for(kind, body)
             try:
                 result = handler(body)
             except ActionError as e:

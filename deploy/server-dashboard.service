@@ -21,9 +21,11 @@ MemoryMax=192M
 OOMPolicy=continue
 NoNewPrivileges=yes
 PrivateTmp=yes
-ProtectHome=yes
+# The admin tools (users, SSH keys, config editor) have to edit /etc, home folders, crontabs and mail spools,
+# so the sandbox is opened exactly that far. /usr, /boot and the rest of /var stay read-only.
+ProtectHome=no
 ProtectSystem=strict
-ReadWritePaths=/mnt/Extra20/admin/data
+ReadWritePaths=/mnt/Extra20/admin/data /etc /home /root -/var/spool/cron -/var/mail
 
 [Install]
 WantedBy=multi-user.target

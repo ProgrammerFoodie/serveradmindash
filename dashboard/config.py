@@ -24,6 +24,11 @@ _SCHEMA = {
 }
 
 
+# Admin tools (phases 13-19). Each is off unless config.json says true: the web page can never switch one on,
+# because nothing in the program writes to config.json except `set-password`.
+ADMIN_SWITCHES = ("power", "users", "ssh_keys", "private_keys", "configs")
+
+
 class ConfigError(Exception):
     pass
 
@@ -49,6 +54,17 @@ def validate(cfg: dict) -> None:
         if not 1 <= idle <= 1440:
             raise ConfigError("config.auth.idle_minutes: expected 1 to 1440 minutes")
 
+    if "admin" in cfg:
+        admin = cfg["admin"]
+        if not isinstance(admin, dict):
+            raise ConfigError("config.admin: expected an object")
+        unknown = set(admin) - set(ADMIN_SWITCHES)
+        if unknown:
+            raise ConfigError(f"config.admin: unknown key(s): {', '.join(sorted(unknown))}; use {', '.join(ADMIN_SWITCHES)}")
+        for key, value in admin.items():
+            if not isinstance(value, bool):
+                raise ConfigError(f"config.admin.{key}: expected true or false")
+
     host, _, port = cfg["listen"].rpartition(":")
     if not host or not port.isdigit() or not 0 < int(port) < 65536:
         raise ConfigError(f"config.listen: expected host:port, got {cfg['listen']!r}")
@@ -64,6 +80,13 @@ def validate(cfg: dict) -> None:
     unknown = set(cfg["watch"]["protected"]) - set(cfg["watch"]["systemd"])
     if unknown:
         raise ConfigError(f"config.watch.protected: not in watch.systemd: {', '.join(sorted(unknown))}")
+
+
+def admin_switches(cfg: dict) -> dict[str, bool]:
+    """Which admin tools are on. A missing block, or a missing key, means off."""
+    block = cfg.get("admin")
+    block = block if isinstance(block, dict) else {}
+    return {name: block.get(name) is True for name in ADMIN_SWITCHES}
 
 
 def load(path: Path | None = None, allow_example: bool = False) -> tuple[dict, Path]:

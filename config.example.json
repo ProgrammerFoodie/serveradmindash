@@ -2,6 +2,7 @@
   "listen": "127.0.0.1:9100",
   "public_host": "admin.example.com",
   "auth": { "username": "admin", "password_hash": "", "session_hours": 720, "idle_minutes": 15 },
+  "admin": { "power": true, "users": true, "ssh_keys": true, "private_keys": true, "configs": true },
   "telegram": { "bot_token": "", "chat_id": "", "enabled": true },
   "watch": {
     "systemd": ["nginx", "app1", "app2", "redis-server", "supervisor", "smbd",

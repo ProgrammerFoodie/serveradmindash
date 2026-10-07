@@ -94,7 +94,8 @@ sys.exit(0 if json.load(open(sys.argv[1]))["auth"]["password_hash"] else 1)
 PY
     install -m 644 "$HERE/server-dashboard.service" /etc/systemd/system/server-dashboard.service
     systemctl daemon-reload
-    systemctl enable --now server-dashboard
+    systemctl enable server-dashboard
+    systemctl restart server-dashboard      # not just "--now": a running service must pick up new code and unit settings
     sleep 3
     systemctl --no-pager --lines=8 status server-dashboard || true
     echo

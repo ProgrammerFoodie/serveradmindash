@@ -1,6 +1,7 @@
 // Shell: session, tab routing, the 5-second refresh of the visible tab, the alert statusbar.
 
 import { api, AuthError } from "./api.js";
+import { askConfirm } from "./confirm.js";
 import { watchIdle } from "./idle.js";
 import { append, clear, el, fmtAgo, fmtDuration, store } from "./util.js";
 import overview from "./tabs/overview.js";
@@ -66,17 +67,9 @@ ctx.toast = (text, kind = "ok", sticky = false) => {
 };
 
 /** Ask before doing something. Resolves true only if the person pressed the confirm button; Cancel has the focus. */
-ctx.confirm = ({ title, lines = [], warning = [], confirmLabel = "Confirm", danger = false }) => new Promise((resolve) => {
-  confirmDialog.returnValue = "";
-  confirmDialog.replaceChildren(el("form", { method: "dialog" },
-    el("h2", { id: "confirm-title" }, title),
-    lines.map((l) => el("p", null, l)), warning.map((l) => el("p", { class: "warn" }, l)),
-    el("div", { class: "confirm-actions" },
-      el("button", { class: "btn", value: "cancel", autofocus: true }, "Cancel"),
-      el("button", { class: `btn ${danger ? "danger" : "primary"}`, value: "ok" }, confirmLabel))));
-  confirmDialog.addEventListener("close", () => resolve(confirmDialog.returnValue === "ok"), { once: true });
-  confirmDialog.showModal();
-});
+ctx.confirm = (options) => askConfirm(confirmDialog, options);
+/** The same for dangerous things: the confirm button stays disabled until `word` has been typed. */
+ctx.confirmTyped = ({ word, ...options }) => askConfirm(confirmDialog, { ...options, typed: word });
 
 /** Perform an action on the server, tell the person what happened, refresh the page data. Returns the result or null. */
 ctx.actionSeq = 0;

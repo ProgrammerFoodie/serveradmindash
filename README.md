@@ -30,6 +30,17 @@ Built, installed and verified on 2026-10-06, including a reboot.
 | Add a device that may open it | add its Tailscale address to the `geo $admin_allowed` block in `/etc/nginx/sites-available/admin`, then `nginx -t && systemctl reload nginx` |
 | Remove everything | see PLAN.md, section 5 |
 
+## Admin tools (in progress)
+
+Reboot, user management, SSH keys and a config editor are being added in phases (see [PLAN-admin-tools.md](PLAN-admin-tools.md)).
+Each one is off unless `config.json` says so; the web page can never switch one on:
+
+```json
+"admin": { "power": true, "users": true, "ssh_keys": true, "private_keys": true, "configs": true }
+```
+
+A missing block, or a missing key, means off. Edit it as root and restart the service.
+
 ## Locking it down
 
 The service runs as root, so whoever can write to this folder can run code as root at the next restart. After development is finished:

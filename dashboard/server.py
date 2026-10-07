@@ -10,13 +10,14 @@ import html
 import ipaddress
 import json
 import logging
+import re
 import threading
 import time
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import __version__
+from . import __version__, config
 from .actions import ActionError
 from .alerts import evaluate
 from .auth import (MAX_PASSWORD_LEN, SESSION_COOKIE, LoginLimiter, Sessions, hash_password, verify_password)
@@ -65,6 +66,7 @@ class App:
 
     def __init__(self, cfg, scheduler, history, sessions: Sessions, limiter: LoginLimiter | None = None, alerts=None, actions=None):
         self.cfg, self.scheduler, self.history, self.sessions = cfg, scheduler, history, sessions
+        self.admin = config.admin_switches(cfg)          # which admin tools are on; fixed for the life of the process
         self.alerts, self.actions = alerts, actions
         self.limiter = limiter or LoginLimiter()
         host, _, port = cfg["listen"].rpartition(":")
@@ -74,6 +76,11 @@ class App:
         # Verifying against this when the username is wrong keeps both failures equally slow.
         self.dummy_hash = hash_password("not-the-password")
         self.started = time.time()
+
+    def require_feature(self, name: str) -> None:
+        """404 (not 403) for an admin tool that is switched off, so a switched-off tool is indistinguishable from a missing one."""
+        if not self.admin.get(name):
+            raise HttpError(404, "not found")
 
 
 class Server(ThreadingHTTPServer):
@@ -379,8 +386,15 @@ class Handler(BaseHTTPRequestHandler):
                                     "expires": session["expires"], "server_time": round(time.time()),
                                     "idle_s": app.sessions.idle,
                                     "thresholds": app.cfg["thresholds"],
-                                    "actions": app.actions is not None,
+                                    "actions": app.actions is not None, "admin": app.admin,
                                     "protected": sorted(app.actions.protected) if app.actions else []})
+
+        if path.startswith("/api/jobs/"):
+            job_id = path[len("/api/jobs/"):]
+            job = app.actions.jobs.get(job_id) if app.actions and re.fullmatch(r"[0-9a-f]{16}", job_id) else None
+            if job is None:
+                raise HttpError(404, "no such job")
+            return self._json(200, job)
 
         if path == "/api/live":
             tab = one("tab", "overview")
