@@ -229,6 +229,55 @@ every user name. Passwords go to `chpasswd` on **stdin only** (never argv, never
 
 Typed confirmations: remove, rename, ban and change home require typing the user name.
 
+## Phase 16b - fixes after the first real test, and a folder browser  (planned)
+
+### What the real test showed (2026-10-07, account `testdata`)
+Evidence, read from the live system: the account's home in `/etc/passwd` is `/mnt/Extra20/datatest`, that folder does not exist, and the files are
+still in `/home/datatest`. Lock and unlock worked (the expiry ledger is empty again), add and rename worked (the group followed the rename).
+
+**Defect 1: the service sandbox does not let the dashboard write to the data disk.** Inside the running service `/mnt/Extra20` is mounted read-only
+(`/proc/<pid>/mountinfo`: `ro`; only `/mnt/Extra20/admin/data`, `/etc` and `/home` are read-write). `usermod -d NEW -m` wrote the new path to
+`/etc/passwd` first and then failed to create the folder. The same sandbox would also have broken `useradd -m -d /mnt/...`, `userdel -r` for such a
+home, and (phase 17) editing `~/.ssh` of anyone whose home is on that disk. I pinned the unit's list in a test but never asked whether the places
+people want their homes are in it.
+
+**Defect 2: a failed `usermod -m` leaves the account half changed, and the dashboard just reports an error.** `usermod` changes `/etc/passwd` before it
+moves the files, so "failed" can mean "the account now points at a folder that is not there". The same trap exists in `useradd -m` (account created,
+home not), `userdel -r` (account gone, folder still there) and the home step of a rename (already reported as a partial success, but without checking).
+
+### Fix plan, in this order
+1. **Sandbox** (`deploy/server-dashboard.service`): add `/mnt/Extra20` to `ReadWritePaths` (it replaces the narrower `/mnt/Extra20/admin/data`, which it
+   contains). Consequence to accept: the dashboard's own code folder is then writable from inside the service; it already can edit `/etc` and `sudoers`
+   with these tools, and the code folder stays protected from being used as a home (`protect=`). Alternative if you prefer: allow only a dedicated
+   `/mnt/Extra20/homes` and refuse other places. Update the pinned test, and say in the README how to allow another disk (a drop-in with one more path).
+2. **Look before acting** (`useradmin.py`): before `useradd -m`, `usermod -m`, `userdel -r`, a folder creation and a rename-with-home, check that the parent
+   folder is writable for the dashboard (`os.access`; a read-only mount answers EROFS) and refuse with a plain sentence ("/mnt/Extra20 is read-only for
+   the dashboard") before anything is changed.
+3. **After a failure, look again and put it back** (`useradmin.py`): when `usermod -d` fails, read the account fresh; if its home changed but the folder
+   does not exist, run `usermod -d <old home> -- name` (no `-m`) and say so; if that fails too, say exactly which state it is in. Same for `useradd` (remove
+   the account we just created if the folder could not be made, never touching anything that existed before), `userdel -r` (report what is left) and
+   rename. Every message names the real state, never just "failed".
+4. **A folder browser instead of typing paths**:
+   * `GET /api/folders?path=&hidden=` (needs `admin.users`): `path` (default: the first place), `parent`, the **places** (`/home` and every real disk mount
+     from the mount table, with free space and whether the dashboard may write there), and the sub-folders of `path` (folders only, newest rules of
+     `home_problem` applied per entry): each entry is `enterable` and/or `selectable` with a reason when not (system folder, symbolic link, the dashboard's own
+     folder, another user's home). Dot-folders hidden unless asked; at most 500 entries; no symbolic link is followed; nothing outside real directories is ever listed.
+   * `static/js/folderpicker.js` + `<dialog id="picker">` stacked above the form: places as buttons ("/home  9 GB free", "/mnt/Extra20  14.7 GB free", with a
+     "read-only for the dashboard" badge where it applies), a clickable breadcrumb, the folder list (click to enter, greyed rows say why), "show hidden",
+     a **folder name box** (prefilled with the user name) and a live preview "The home folder will be: /mnt/Extra20/datatest"; Choose is disabled while the
+     choice is not allowed. Empty name = use the folder itself.
+   * `formdialog.js` gets a folder field (a text box plus **Browse…**); used for the home folder in "Change home folder" and in "Add user". Typing a path still works.
+   * Tests: listing rules on a temp tree, places from fixture mount tables (bind mounts of sub-folders ignored), refusals, the endpoint, the picker and the form field in the fake DOM.
+5. **Repair of `testdata`** (no code needed): in the Users tab, Change home folder -> `/home/datatest`, move **unticked** (the existing folder of theirs is used),
+   which makes the account consistent again; after fix 1 is installed, change it to `/mnt/Extra20/datatest` with move ticked. By hand instead:
+   `sudo usermod -d /home/datatest testdata`. (The move option cannot be used while the current home is missing: it refuses, on purpose.)
+
+### Install after the fixes
+`sudo deploy/install-admin.sh service` (restarts the service; the sandbox change only applies after a restart).
+
+### Not changed
+The typed-name confirmation, the last-admin guard, the dependents check and the password handling behaved as designed in the test.
+
 ## Phase 17 - SSH keys
 
 **Read** (`dashboard/sshkeys.py`):
