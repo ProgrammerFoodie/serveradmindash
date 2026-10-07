@@ -55,6 +55,16 @@ export function fmtBytes(v, digits) {
   return `${v < 0 ? "-" : ""}${n.toFixed(d)} ${units[i]}`;
 }
 
+/** Token counts as people read them: 950, 12.3k, 4.56M, 1.20B. */
+export function fmtTokens(v) {
+  if (!isNum(v)) return DASH;
+  const n = Math.abs(v);
+  if (n >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (n >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (n >= 1e3) return `${(v / 1e3).toFixed(1)}k`;
+  return String(Math.round(v));
+}
+
 export function fmtRate(v) { return isNum(v) ? `${fmtBytes(v)}/s` : DASH; }
 
 export function fmtDuration(seconds) {

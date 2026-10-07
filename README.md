@@ -47,6 +47,12 @@ watched services one by one (data stores first, nginx last), carries on after a 
 responder or tailscaled. To choose the order yourself: `"admin": { "power": true, "restart_order": ["redis-server", "app1", "nginx"] }`.
 Telegram hears about a reboot before it happens and when the server is back.
 
+**Agents** (always on, read-only): an Agents tab with tokens and hours per day for each Claude Code sub-agent type over the last 30 days
+(stacked bars, Tokens/Hours toggle), a per-agent table and the latest runs. `dashboard/collectors/agents.py` reads the sub-agent
+transcripts under `/home/*/.claude/projects` and `/root/.claude/projects` every minute and keeps one row per run in `data/agents.db`, so
+history survives Claude Code deleting old transcripts. Time is wall-clock first-to-last message, split at midnight; tokens are input +
+output + cache read + cache write. Plan: `PLAN-agent-usage.md`.
+
 **Users** (`admin.users`): a Users tab showing who is signed in (SSH, console and this dashboard, with a "you" marker) and every account:
 sudo rights (and whether sudo needs a password), locked, expired or empty passwords, last login, SSH key count, home folder and running
 processes. Click an account for everything about it. Password hashes are never sent to the page. Without root the dashboard still shows

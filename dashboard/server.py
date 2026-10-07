@@ -42,6 +42,7 @@ TABS = {
     "security": ["fail2ban", "logins", "ssh_auth", "updates"],
     "logs": ["journal", "nginx", "ssl"],
     "users": ["users"],                       # only when admin.users is on
+    "agents": ["agents"],
 }
 RANGES = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400}
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",

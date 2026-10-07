@@ -332,6 +332,9 @@ class ApiTest(ServerTest):
         self.assertIsInstance(body["alerts"], list)
         self.assertEqual(self.req("GET", "/api/live?tab=bogus", token=token)[0], 400)
         self.assertEqual(self.sched.touched, [])
+        self.sched.data["agents"] = {"days": [], "agents": {}}
+        status, _, body = self.req("GET", "/api/live?tab=agents", token=token)
+        self.assertEqual((status, body["sections"]["agents"]["data"]["agents"]), (200, {}))
         self.req("GET", "/api/live?tab=processes", token=token)
         self.assertEqual(self.sched.touched, ["processes"])
 

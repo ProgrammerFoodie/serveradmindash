@@ -13,8 +13,9 @@ import network from "./tabs/network.js";
 import security from "./tabs/security.js";
 import logs from "./tabs/logs.js";
 import users from "./tabs/users.js";
+import agents from "./tabs/agents.js";
 
-const BASE_TABS = [overview, processes, services, network, security, logs];
+const BASE_TABS = [overview, processes, services, network, security, logs, agents];
 let TABS = BASE_TABS;                          // the Users tab is added once the session says config.json switches it on
 const RANGES = ["1h", "6h", "24h", "7d", "30d", "90d"];
 const REFRESH_MS = 5000;

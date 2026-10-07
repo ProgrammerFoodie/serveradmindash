@@ -246,3 +246,13 @@ button.folder-row:hover { background: var(--panel-2); }
 .folder-icon { color: var(--faint); }
 .folder-preview { margin: 0; font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
 .folder-preview b { color: var(--text); }
+
+/* Agents tab: stacked daily bars, one coloured segment per agent type */
+.agent-chart { display: flex; align-items: flex-end; gap: 2px; height: 200px; border-bottom: 1px solid var(--line); }
+.agent-day { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column-reverse; cursor: default; }
+.agent-day:hover, .agent-day:focus-visible { background: var(--panel-2); outline: none; }
+.agent-seg { display: block; width: 100%; background: var(--c1); }
+.agent-seg.c1 { background: var(--c1); } .agent-seg.c2 { background: var(--c2); } .agent-seg.c3 { background: var(--c3); }
+.agent-seg.c4 { background: var(--c4); } .agent-seg.c5 { background: var(--c5); } .agent-seg.c6 { background: var(--c6); }
+.agent-axis { display: flex; justify-content: space-between; color: var(--dim); font-size: 12px; margin-top: 4px; }
+.agent-detail { min-height: 2.6em; margin-top: 8px; font-size: 13px; }

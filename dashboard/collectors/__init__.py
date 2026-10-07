@@ -8,7 +8,7 @@ run() wraps every collector so one broken source can never take down the page:
 an exception becomes {"error": "..."} in that section only.
 """
 
-from . import cpu, disks, logs, memory, network, processes, security, services, system, users
+from . import agents, cpu, disks, logs, memory, network, processes, security, services, system, users
 
 
 def create(cfg: dict | None = None) -> dict:
@@ -37,6 +37,7 @@ def create(cfg: dict | None = None) -> dict:
         "ssh_auth": security.SshAuth(),
         "journal": logs.Journal(),
         "nginx": logs.Nginx(),
+        "agents": agents.Agents(),
         # slow
         "updates": security.Updates(),
         "ssl": logs.Ssl(),
