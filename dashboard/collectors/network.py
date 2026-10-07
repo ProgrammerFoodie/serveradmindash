@@ -43,8 +43,11 @@ class NetIO:
         prev, elapsed = self._delta.update(stats)
         ifaces = []
         for name, s in stats.items():
-            row = {"name": name, **s,
-                   "up": read_text(f"/sys/class/net/{name}/operstate").strip() in ("up", "unknown"),
+            try:
+                up = read_text(f"/sys/class/net/{name}/operstate").strip() in ("up", "unknown")
+            except OSError:
+                continue                                            # the interface vanished between the two reads
+            row = {"name": name, **s, "up": up,
                    "rx_Bps": None, "tx_Bps": None, "rx_pps": None, "tx_pps": None}
             p = prev.get(name) if prev else None
             if p:

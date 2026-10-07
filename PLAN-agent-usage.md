@@ -66,3 +66,16 @@ Then, **as root**, `deploy/install-admin.sh service` (restarts the service; I ca
 - **Cleanup**: Claude Code deletes old transcripts; the SQLite rows keep history, but only for runs seen while the dashboard was running.
 - **Sensitivity**: `descr` is the task title of the user's own runs, shown only to the authenticated user. Do not log it.
 - Out of scope (offer later): cost estimate per model, per-project breakdown, main-session (non-sub-agent) usage.
+
+## Review follow-up (2026-10-07)
+Two Opus code reviews are in `reviews/code-reviewer/`. Fixed in the commit after phase 20 (497 tests):
+- agents.py: files opened with O_NOFOLLOW/O_NONBLOCK + fstat checks and size caps (meta 64 KB, line 1 MB, file 50 MB); a fixed three-level
+  scandir walk with no symlinked directories; work budget per minute; rows keyed by full path; unusable files remembered; DST-correct days.
+- security.py SSH regexes (forged "from"), logs.py journal `-n` limit and per-entry error handling, util.pressure without PSI, network operstate race.
+- Front end: keyboard-operable table rows that keep focus on refresh, Agents chart not rebuilt for unchanged data, visible focus ring.
+- Backend: Lock/Ban now really block an account whose password was already locked (expiry is what stops SSH keys), Unlock leaves a prior
+  `passwd -l` and any real expiry alone; home parents must belong to root and not be writable by others; a failed add never removes an
+  account it did not create; private files are written with `safefs.write_private` / O_NOFOLLOW.
+Not done (needs root or a decision): H1 root-owned deploy of code/config/data (`chown -R root:root`, then the owner edits as root), background
+jobs for slow home moves/removals (M2), leftover sudoers/crontab/sshd rules on removal (M3 is reported as notes today), L2-L5 backend items.
+Timezone of the host is UTC, so the DST finding was latent; "Time" is wall-clock span (first to last message).

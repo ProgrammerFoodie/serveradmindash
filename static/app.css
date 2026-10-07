@@ -250,7 +250,8 @@ button.folder-row:hover { background: var(--panel-2); }
 /* Agents tab: stacked daily bars, one coloured segment per agent type */
 .agent-chart { display: flex; align-items: flex-end; gap: 2px; height: 200px; border-bottom: 1px solid var(--line); }
 .agent-day { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column-reverse; cursor: default; }
-.agent-day:hover, .agent-day:focus-visible { background: var(--panel-2); outline: none; }
+.agent-day:hover, .agent-day:focus-visible { background: var(--panel-2); }
+.agent-day:focus-visible { outline: 2px solid var(--c1); outline-offset: 1px; }
 .agent-seg { display: block; width: 100%; background: var(--c1); }
 .agent-seg.c1 { background: var(--c1); } .agent-seg.c2 { background: var(--c2); } .agent-seg.c3 { background: var(--c3); }
 .agent-seg.c4 { background: var(--c4); } .agent-seg.c5 { background: var(--c5); } .agent-seg.c6 { background: var(--c6); }

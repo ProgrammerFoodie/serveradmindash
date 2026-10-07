@@ -99,7 +99,7 @@ class History:
         self._buffer: list[tuple[int, dict]] = []
         self._ids: dict[str, int] = {}
         # Create the file private first: SQLite gives the -wal and -shm files the main file's mode.
-        os.close(os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600))
+        os.close(os.open(self.path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600))
         self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=10, isolation_level=None)
         # auto_vacuum only takes effect before the first table exists; it lets incremental_vacuum
         # hand freed pages back to the filesystem instead of the file never shrinking.

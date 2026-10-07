@@ -51,7 +51,11 @@ def run(args: list[str], timeout: float = 5.0, ok_codes: tuple[int, ...] = (0,),
 def pressure(resource: str) -> dict:
     """Kernel PSI for cpu/memory/io: {"some": {"avg10": .., "avg60": .., "avg300": ..}, "full": {..}}."""
     out = {}
-    for line in read_text(f"/proc/pressure/{resource}").splitlines():
+    try:
+        text = read_text(f"/proc/pressure/{resource}")
+    except OSError:
+        return out                                                  # kernel without PSI: only the pressure fields go missing
+    for line in text.splitlines():
         kind, *pairs = line.split()
         values = dict(p.split("=") for p in pairs)
         out[kind] = {k: float(values[k]) for k in ("avg10", "avg60", "avg300")}

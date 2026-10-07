@@ -40,5 +40,21 @@ check(tab.el.find((n) => n.hasClass("agent-seg")).length === 2, "hours mode keep
 check(hours.getAttribute("aria-pressed") === "true", "hours button pressed");
 check(!/\b(null|undefined|NaN)\b/.test(text()), "no null/undefined/NaN text");
 
+// same collection time: nothing is rebuilt (a rebuild would drop keyboard focus); a new time rebuilds
+const t1 = { sections: { agents: { t: 100, data } } };
+tab.update(t1);
+const col = () => tab.el.find((n) => n.hasClass("agent-day"))[0];
+const before = col();
+tab.update(t1);
+check(col() === before, "identical data does not rebuild the chart");
+tab.update({ sections: { agents: { t: 160, data } } });
+check(col() !== before, "new data rebuilds the chart");
+
+// an error blanks all three panels, and recovery brings the tables back
+tab.update({ sections: { agents: { data: { error: "boom" } } } });
+check(!text().includes("general-purpose"), "no stale agent rows while unavailable");
+tab.update({ sections: { agents: { t: 220, data } } });
+check(text().includes("general-purpose") && text().includes("Survey"), "tables return after recovery");
+
 if (failed) process.exit(1);
 console.log("ok");

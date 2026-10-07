@@ -121,6 +121,117 @@ class AgentsTest(unittest.TestCase):
         self.assertEqual(set(rep["recent"][0]), {"agent", "descr", "model", "start", "seconds", "tokens"})
         self.assertNotIn("proj", json.dumps(rep))                                       # no paths
 
+    # ---- hostile trees (the collector runs as root over folders a normal user controls) ----
+
+    def test_a_meta_file_that_is_a_fifo_or_a_symlink_to_dev_zero_is_ignored_without_blocking(self):
+        self.write("fifo", [msg(self.now - 10, "m1", 5)])
+        os.mkfifo(self.sub / "agent-fifo.meta.json")
+        self.write("zero", [msg(self.now - 10, "m1", 5)])
+        os.symlink("/dev/zero", self.sub / "agent-zero.meta.json")
+        rep = self.agents.collect({})                       # must return, not hang or exhaust memory
+        self.assertEqual(rep["agents"]["unknown"]["runs"], 2)
+
+    def test_an_oversized_meta_file_is_not_read(self):
+        self.write("big", [msg(self.now - 10, "m1", 5)])
+        (self.sub / "agent-big.meta.json").write_text(json.dumps({"agentType": "Evil", "pad": "x" * (mod.MAX_META_BYTES + 10)}))
+        self.assertIn("unknown", self.agents.collect({})["agents"])
+
+    def test_a_transcript_swapped_for_a_symlink_is_not_followed(self):
+        outside = Path(self.tmp.name) / "secret.jsonl"
+        outside.write_text(json.dumps(msg(self.now - 10, "m1", 5)) + "\n")
+        link = self.sub / "agent-swap.jsonl"
+        os.symlink(outside, link)
+        self.assertIsNone(read_run(str(link)))              # O_NOFOLLOW, even if the earlier lstat check was raced
+
+    def test_symlinked_directories_are_neither_followed_nor_looped_over(self):
+        os.symlink(".", self.root / "proj" / "loop-a")
+        os.symlink(".", self.root / "proj" / "loop-b")
+        outside = Path(self.tmp.name) / "elsewhere" / "sess" / "subagents"
+        outside.mkdir(parents=True)
+        (outside / "agent-x.jsonl").write_text(json.dumps(msg(self.now - 10, "m1", 5)) + "\n")
+        os.symlink(Path(self.tmp.name) / "elsewhere", self.root / "linked-project")
+        self.write("real", [msg(self.now - 10, "m1", 5)], {"agentType": "Explore"})
+        rep = self.agents.collect({})
+        self.assertEqual(rep["totals"]["runs"], 1)
+        self.assertEqual(rep["scanned"], 1)
+
+    def test_a_huge_line_is_skipped_and_the_rest_of_the_file_still_counts(self):
+        big = '{"timestamp": "%s", "pad": "%s"}' % (iso(self.now - 50), "x" * (mod.MAX_LINE_BYTES + 5))
+        p = self.sub / "agent-long.jsonl"
+        p.write_text(big + "\n" + json.dumps(msg(self.now - 10, "m1", 7)) + "\n")
+        r = read_run(str(p))
+        self.assertEqual(r["out"], 7)
+        self.assertAlmostEqual(r["end"] - r["start"], 0, places=2)      # the long line's timestamp was never parsed
+
+    def test_files_over_the_size_limit_are_not_parsed(self):
+        p = self.write("a", [msg(self.now - 10, "m1", 5)])
+        old, mod.MAX_FILE_BYTES = mod.MAX_FILE_BYTES, 10
+        try:
+            self.assertIsNone(read_run(str(p)))
+        finally:
+            mod.MAX_FILE_BYTES = old
+
+    def test_the_same_agent_id_in_two_projects_gives_two_runs(self):
+        other = self.root / "proj2" / "sess" / "subagents"
+        other.mkdir(parents=True)
+        for d in (self.sub, other):
+            (d / "agent-same.jsonl").write_text(json.dumps(msg(self.now - 10, "m1", 5)) + "\n")
+        self.assertEqual(self.agents.collect({})["totals"]["runs"], 2)
+
+    def test_an_unusable_file_is_not_opened_again_until_it_changes(self):
+        p = self.write("empty", None, raw="")
+        calls = []
+        real = mod.read_run
+        mod.read_run = lambda path: calls.append(path) or real(path)
+        try:
+            self.agents.collect({}); self.agents.collect({})
+            self.assertEqual(len(calls), 1)
+            p.write_text(json.dumps(msg(self.now - 10, "m1", 5)) + "\n")
+            os.utime(p, (self.now + 9, self.now + 9))
+            self.assertEqual(self.agents.collect({})["totals"]["runs"], 1)
+        finally:
+            mod.read_run = real
+
+    def test_messages_without_any_id_are_not_merged_into_one(self):
+        lines = [{"type": "assistant", "timestamp": iso(self.now - 10 + i),
+                  "message": {"usage": {"output_tokens": 10}}} for i in range(3)]
+        self.assertEqual(read_run(str(self.write("noid", lines)))["out"], 30)
+
+    def test_one_collect_reads_at_most_a_bounded_number_of_files(self):
+        for i in range(5):
+            self.write(f"f{i}", [msg(self.now - 10, "m1", 5)])
+        old, mod.SCAN_FILES = mod.SCAN_FILES, 2
+        try:
+            self.assertEqual(self.agents.collect({})["totals"]["runs"], 2)
+            self.assertEqual(self.agents.collect({})["totals"]["runs"], 4)
+            self.assertEqual(self.agents.collect({})["totals"]["runs"], 5)
+        finally:
+            mod.SCAN_FILES = old
+
+    def test_days_follow_the_clock_across_a_dst_change(self):
+        old = os.environ.get("TZ")
+        os.environ["TZ"] = "Europe/Riga"; time.tzset()
+        try:
+            d = datetime(2026, 10, 25, 12, 0)                           # EU summer time ends 2026-10-25 04:00 -> 03:00 local
+            now = d.timestamp()
+            a = Agents(roots=[str(self.root)], db_path=Path(self.tmp.name) / "dst.db")
+            start = datetime(2026, 10, 25, 0, 0).timestamp()
+            self.write("dst", [msg(start, "m1", 5), msg(start + 25 * 3600 - 1, "m2", 5)], {"agentType": "Explore"})
+            real_time, mod.time.time = mod.time.time, lambda: now
+            try:
+                rep = a.collect({})
+            finally:
+                mod.time.time = real_time
+            day = rep["days"].index("2026-10-25")
+            self.assertAlmostEqual(rep["agents"]["Explore"]["seconds"][day], 25 * 3600 - 1, delta=1)     # the 25-hour day is counted whole
+            self.assertEqual(rep["agents"]["Explore"]["seconds"][day - 1], 0)
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+
 
 if __name__ == "__main__":
     unittest.main()

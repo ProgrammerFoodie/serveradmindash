@@ -188,6 +188,32 @@ def atomic_write(dir_fd: int, name: str, data: bytes, uid: int, gid: int, mode: 
     os.fsync(dir_fd)
 
 
+def write_private(path, data: bytes, mode: int = 0o600) -> None:
+    """Replace the file `path` with `data` (owner-only by default), safe in a folder another user may write to.
+
+    The temporary file has an unpredictable name and is created with O_EXCL | O_NOFOLLOW, so a symlink planted
+    at a guessable name cannot make a root process truncate some other file; the rename then replaces whatever is
+    at `path` (a symlink included) instead of following it."""
+    path = os.fspath(path)
+    tmp = f"{path}.{secrets.token_hex(6)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, mode)
+    try:
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 # ---- backups of config files -------------------------------------------------------------------------
 
 def _backup_folder(path: str, root: Path) -> Path:

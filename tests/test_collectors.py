@@ -33,3 +33,53 @@ class ReadOnlyMountTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SshAuthParserTest(unittest.TestCase):
+    def parse(self, message):
+        from dashboard.collectors.security import SshAuth
+        return SshAuth(path="/nonexistent")._parse(f"2026-10-07T10:00:00+00:00 host sshd-session[123]: {message}")
+
+    def test_ordinary_lines(self):
+        self.assertEqual(self.parse("Failed password for root from 198.51.100.7 port 5555 ssh2")[1:], ("failed", "root", "198.51.100.7", "password"))
+        self.assertEqual(self.parse("Failed password for invalid user bob from 198.51.100.7 port 5555 ssh2")[1:], ("failed", "bob", "198.51.100.7", "password"))
+        self.assertEqual(self.parse("Invalid user bob from 198.51.100.7 port 5555")[1:], ("invalid_user", "bob", "198.51.100.7", ""))
+        self.assertEqual(self.parse("Accepted publickey for alice from 100.64.0.10 port 4000 ssh2: ED25519 SHA256:abc")[1:], ("accepted", "alice", "100.64.0.10", "publickey"))
+
+    def test_a_user_name_cannot_forge_the_address(self):
+        forged = "x from 203.0.113.9 port 1"
+        got = self.parse(f"Invalid user {forged} from 198.51.100.7 port 5555")
+        self.assertEqual((got[2], got[3]), (forged, "198.51.100.7"))
+        got = self.parse(f"Failed password for invalid user {forged} from 198.51.100.7 port 5555 ssh2")
+        self.assertEqual((got[2], got[3]), (forged, "198.51.100.7"))
+
+    def test_an_empty_user_name_is_still_counted_and_long_names_are_cut(self):
+        self.assertEqual(self.parse("Invalid user  from 198.51.100.7 port 5555")[2:4], ("", "198.51.100.7"))
+        self.assertEqual(len(self.parse("Invalid user " + "a" * 500 + " from 198.51.100.7 port 5555")[2]), 64)
+
+    def test_unrelated_lines_are_ignored(self):
+        self.assertIsNone(self.parse("Connection closed by 198.51.100.7 port 5555 [preauth]"))
+
+
+class RobustnessTest(unittest.TestCase):
+    def test_pressure_without_psi_is_empty_not_an_error(self):
+        from dashboard import util
+        real = util.read_text
+        util.read_text = lambda path: (_ for _ in ()).throw(FileNotFoundError(path))
+        try:
+            self.assertEqual(util.pressure("cpu"), {})
+        finally:
+            util.read_text = real
+
+    def test_the_journal_read_is_bounded_with_and_without_a_cursor(self):
+        from dashboard.collectors import logs
+        seen = []
+        real = logs.run
+        logs.run = lambda args, timeout=5: seen.append(args) or '{"__CURSOR":"c1","__REALTIME_TIMESTAMP":"1","PRIORITY":"x"}\n{"__CURSOR":"c2","__REALTIME_TIMESTAMP":"2000000","PRIORITY":"3","MESSAGE":"ok"}\n'
+        try:
+            j = logs.Journal()
+            j.collect({}); j.collect({})
+        finally:
+            logs.run = real
+        self.assertTrue(all(f"-n{logs.Journal.MAX_ENTRIES}" in a for a in seen))
+        self.assertIn("--after-cursor=c2", seen[1])                       # the bad-priority entry did not drop the good one after it

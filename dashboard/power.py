@@ -20,6 +20,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import safefs
 from .actions import SERVICE_TIMEOUT_S, ActionError, clean, require_confirmation
 from .alertmanager import fmt_duration
 from .config import RESTART_ALL_EXCLUDED
@@ -246,12 +247,8 @@ class Power:
 
     def _write_pending(self, who: dict, delay: int) -> None:
         note = {"by": clean(who["user"], 64), "ip": clean(who["ip"], 64), "requested": self._clock(), "delay": delay, "boot_id": self._boot_id()}
-        tmp = self._pending_path.with_suffix(".tmp")
         try:
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(note, f)
-            os.replace(tmp, self._pending_path)
+            safefs.write_private(self._pending_path, json.dumps(note).encode())
         except OSError:
             log.exception("could not write %s", self._pending_path)       # the reboot still goes ahead; only the "back up" message is lost
 

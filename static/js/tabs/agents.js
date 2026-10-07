@@ -38,13 +38,18 @@ export default {
         { key: "seconds", label: "Time", num: true, render: (r) => fmtDuration(r.seconds) }],
     });
     tableP.set(table.el); recentP.set(recent.el);
+    let shown = NaN, placeholder = false;           // collection time of the data on screen; whether a placeholder replaced the tables
 
     return {
       el: el("div", { class: "rows" }, chartP.el, tableP.el, recentP.el),
       update(live) {
         const s = live.sections.agents;
-        if (!s) { chartP.set(el("p", { class: "empty" }, "Waiting for data…")); return; }
-        if (s.data.error) { chartP.set(el("p", { class: "err" }, `Unavailable: ${s.data.error}`)); return; }
+        if (!s) { shown = NaN; placeholder = true; chartP.set(el("p", { class: "empty" }, "Waiting for data…")); tableP.set(el("p", { class: "empty" }, "–")); recentP.set(el("p", { class: "empty" }, "–")); return; }
+        if (s.data.error) { shown = NaN; placeholder = true; chartP.set(el("p", { class: "err" }, `Unavailable: ${s.data.error}`)); tableP.set(el("p", { class: "empty" }, "–")); recentP.set(el("p", { class: "empty" }, "–")); return; }
+        // The collector runs once a minute but the page polls every 5 s: rebuilding the chart for identical data would drop keyboard focus.
+        if (s.t !== undefined && shown === s.t) return;
+        if (placeholder) { tableP.set(table.el); recentP.set(recent.el); placeholder = false; }
+        shown = s.t === undefined ? NaN : s.t;
         const d = s.data;
         const names = chart.setData(d);
         chartP.set(chart.el, el("div", { class: "sub" },

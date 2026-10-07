@@ -115,9 +115,11 @@ class Logins:
 # OpenSSH 9.8+ logs authentication from "sshd-session" rather than "sshd".
 _SSHD = re.compile(r"^\S+\s+sshd(?:-session)?\[\d+\]:\s+(.*)$")
 _SSH_EVENTS = (
-    ("accepted", re.compile(r"^Accepted (\S+) for (\S+) from (\S+) port")),
-    ("failed", re.compile(r"^Failed (\S+) for (?:invalid user )?(\S+) from (\S+) port")),
-    ("invalid_user", re.compile(r"^Invalid user (\S*) from (\S+) port")),
+    # SSH user names may contain spaces and are logged as typed, so "from X port N" can be forged inside one. The user is
+    # matched greedily and the address only counts at the real end of the line: the last " from ... port N" always wins.
+    ("accepted", re.compile(r"^Accepted (\S+) for (.*) from (\S+) port \d+(?: \S+)*$")),
+    ("failed", re.compile(r"^Failed (\S+) for (?:invalid user )?(.*) from (\S+) port \d+(?: \S+)*$")),
+    ("invalid_user", re.compile(r"^Invalid user (.*) from (\S+) port \d+(?: \S+)*$")),
 )
 
 
@@ -145,9 +147,9 @@ class SshAuth:
             if e:
                 if kind == "invalid_user":
                     user, ip = e.groups()
-                    return ts, kind, user, ip, ""
+                    return ts, kind, user[:64], ip, ""
                 method, user, ip = e.groups()
-                return ts, kind, user, ip, method
+                return ts, kind, user[:64], ip, method
         return None
 
     def collect(self, cfg: dict) -> dict:

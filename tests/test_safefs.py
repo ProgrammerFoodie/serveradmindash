@@ -230,3 +230,49 @@ class BackupTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WritePrivateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def test_writes_an_owner_only_file_and_replaces_an_existing_one(self):
+        target = self.dir / "state.json"
+        safefs.write_private(target, b"one")
+        safefs.write_private(target, b"two")
+        self.assertEqual((target.read_bytes(), oct(target.stat().st_mode & 0o777)), (b"two", "0o600"))
+        self.assertEqual([p.name for p in self.dir.iterdir()], ["state.json"])         # no temporary file is left behind
+
+    def test_a_symlink_planted_at_the_target_or_a_guessable_temp_name_is_never_written_through(self):
+        victim = self.dir / "victim"
+        victim.write_text("precious")
+        target = self.dir / "state.json"
+        os.symlink(victim, target)
+        os.symlink(victim, self.dir / "state.json.tmp")                 # the old, guessable temporary name
+        safefs.write_private(target, b"new")
+        self.assertEqual(victim.read_text(), "precious")
+        self.assertFalse(target.is_symlink())
+        self.assertEqual(target.read_bytes(), b"new")
+
+    def test_a_failed_write_cleans_up(self):
+        with self.assertRaises(OSError):
+            safefs.write_private(self.dir / "missing-folder" / "x", b"data")
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+
+class PrivateFilesDoNotFollowSymlinksTest(unittest.TestCase):
+    def test_audit_and_history_refuse_a_symlinked_file(self):
+        from dashboard.audit import Audit
+        from dashboard.history import History
+        with tempfile.TemporaryDirectory() as tmp:
+            victim = Path(tmp) / "victim"
+            victim.write_text("precious")
+            os.symlink(victim, Path(tmp) / "audit.jsonl")
+            Audit(Path(tmp) / "audit.jsonl").record("u", "1.2.3.4", "x", "y", True, "done")      # logged and swallowed, never written through
+            self.assertEqual(victim.read_text(), "precious")
+            os.symlink(victim, Path(tmp) / "history.db")
+            with self.assertRaises(OSError):
+                History(Path(tmp) / "history.db")
+            self.assertEqual(victim.read_text(), "precious")

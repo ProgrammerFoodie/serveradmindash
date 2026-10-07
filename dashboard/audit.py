@@ -30,7 +30,7 @@ class Audit:
         with self._lock:
             try:
                 self._rotate_if_needed(len(line))
-                fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+                fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
                 try:
                     os.write(fd, line)
                 finally:

@@ -16,6 +16,10 @@ class FrontendTest(unittest.TestCase):
         run = subprocess.run(["node", str(ROOT / "tests/js/overview_smoke.mjs")], capture_output=True, text=True, timeout=30)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_clickable_rows_work_from_the_keyboard(self):
+        run = subprocess.run(["node", str(ROOT / "tests/js/rows_smoke.mjs")], capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_agents_tab_renders_empty_and_populated_data(self):
         run = subprocess.run(["node", str(ROOT / "tests/js/agents_smoke.mjs")], capture_output=True, text=True, timeout=30)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)

@@ -131,21 +131,18 @@ class LockLedger:
             return {}
 
     def _save(self, data: dict) -> None:
-        tmp = self.path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f)
-        os.replace(tmp, self.path)
+        safefs.write_private(self.path, json.dumps(data).encode())
 
     def get(self, name: str) -> dict | None:
         with self._lock:
             entry = self._load().get(name)
         return entry if isinstance(entry, dict) else None
 
-    def put(self, name: str, expires_day: int | None, by: str) -> None:
+    def put(self, name: str, expires_day: int | None, by: str, kept_password_lock: bool = False) -> None:
         with self._lock:
             data = self._load()
-            data.setdefault(name, {"expires_day": expires_day, "by": by, "at": time.time()})      # the first lock's value is the true one
+            data.setdefault(name, {"expires_day": expires_day, "by": by, "at": time.time(),         # the first lock's value is the true one
+                                   "kept_password_lock": kept_password_lock})
             self._save(data)
 
     def drop(self, name: str) -> None:
@@ -281,7 +278,8 @@ class Dependents:
 
 class UserAdmin:
     def __init__(self, cfg: dict, actions, scheduler, alerts, audit, sessions, data_dir, *, runner=run, paths: dict | None = None,
-                 clock=time.time, protect=None, forbidden=FORBIDDEN_HOME_ROOTS, access=os.access, mountinfo="/proc/self/mountinfo"):
+                 clock=time.time, protect=None, forbidden=FORBIDDEN_HOME_ROOTS, access=os.access, mountinfo="/proc/self/mountinfo",
+                 trusted_uids=(0,)):
         self.cfg, self.actions, self.scheduler, self.alerts, self.audit, self.sessions = cfg, actions, scheduler, alerts, audit, sessions
         self._run, self._clock = runner, clock
         self.paths = {"group": "/etc/group", "sudoers": "/etc/sudoers", "sudoers_dir": "/etc/sudoers.d", "systemd_dir": "/etc/systemd/system",
@@ -290,6 +288,7 @@ class UserAdmin:
         self.protect = tuple(protect) if protect is not None else (str(ROOT),)
         self.forbidden = tuple(forbidden)
         self._access, self.mountinfo = access, mountinfo
+        self.trusted_uids = frozenset(trusted_uids)          # who may own the folders above a home: nobody else can be allowed to swap it
         self.ledger = LockLedger(Path(data_dir) / "locks.json")
         self.dependents = Dependents(cfg, runner, self.paths)
 
@@ -343,7 +342,13 @@ class UserAdmin:
 
     @staticmethod
     def _is_locked(acct: dict) -> bool:
+        """Some lock is on: the password is locked or the account has expired."""
         return acct["password"] == "locked" or bool(acct["expired"])
+
+    @staticmethod
+    def _is_blocked(acct: dict) -> bool:
+        """Nothing can log in as this account. Only an expiry date stops SSH keys: a locked password alone (`passwd -l`) does not."""
+        return bool(acct["expired"])
 
     def _guard_last_admin(self, data: dict, acct: dict, verb: str) -> None:
         if acct["sudo"] != "full":
@@ -413,9 +418,11 @@ class UserAdmin:
         self.scheduler.refresh("users")
         return ActionError(502, f"{reason}; nothing was moved and the account was put back to {old_home}")
 
-    def _after_failed_add(self, name: str, home: str, reason: str) -> ActionError:
-        """useradd can fail after it has already created the account (for instance when the home folder cannot be made)."""
-        if self._fresh_account(name) is None:
+    def _after_failed_add(self, name: str, home: str, reason: str, existed: bool = False) -> ActionError:
+        """useradd can fail after it has already created the account (for instance when the home folder cannot be made).
+        `existed`: the name was already taken when useradd started (someone else made it in the meantime), so that account
+        is not ours to remove."""
+        if existed or self._fresh_account(name) is None:
             return ActionError(502, reason)
         left = f" The folder {home} was created and left in place." if os.path.lexists(home) else ""
         try:
@@ -459,7 +466,21 @@ class UserAdmin:
             return f"the folder {parent} does not exist"
         if os.path.realpath(parent) != parent:
             return f"{parent} is, or lies behind, a symbolic link"
-        return None
+        # Whoever can write into a folder above the home can swap the home for their own (a .bashrc that runs when the new user logs
+        # in), so every folder on the way up must belong to root and not be writable by anyone else.
+        current = parent
+        while True:
+            try:
+                st = os.lstat(current)
+            except OSError as e:
+                return f"cannot check {current} ({e.strerror})"
+            if st.st_uid not in self.trusted_uids:
+                return f"{current} belongs to another user (uid {st.st_uid}), who could replace the new home folder; use a folder that belongs to root"
+            if st.st_mode & 0o022 and not st.st_mode & stat.S_ISVTX:      # a sticky folder (/tmp) only lets people replace their own entries
+                return f"{current} can be written to by users other than its owner, who could replace the new home folder; tighten its permissions or choose another folder"
+            if current == "/":
+                return None
+            current = posixpath.dirname(current)
 
     def _add(self, body: dict, who: dict) -> dict:
         data, groups = self._snapshot(), self._groups()
@@ -487,11 +508,12 @@ class UserAdmin:
                 raise ActionError(400, problem)
         else:
             password = None
+        existed = self._fresh_account(name) is not None
         args = ["useradd", "-m", "-U", "-d", home, "-s", shell, "-c", comment] + (["-G", "sudo"] if sudo else []) + ["--", name]
         try:
             self._command(args, f"creating {name}")
         except ActionError as e:
-            raise self._after_failed_add(name, home, e.message) from None
+            raise self._after_failed_add(name, home, e.message, existed or "exit 9:" in e.message) from None      # useradd exit 9: the name was already taken, by someone else
         steps = [f"created {name} with home {home}"]
         if password is not None:
             try:
@@ -532,11 +554,12 @@ class UserAdmin:
 
     def _lock_account(self, data: dict, acct: dict, who: dict, verb: str) -> str:
         name = acct["name"]
-        if self._is_locked(acct):
+        if self._is_blocked(acct):
             return "already locked"
         self._guard_last_admin(data, acct, verb)
         previous = acct["expires"] // 86400 if acct["expires"] else None
-        self.ledger.put(name, previous, who["user"])
+        # A password that was already locked before us (passwd -l) is not ours to undo again on Unlock.
+        self.ledger.put(name, previous, who["user"], kept_password_lock=acct["password"] == "locked")
         args = ["usermod"] + (["-L"] if acct["password"] in ("set", "empty") else []) + ["-e", str(LOCKED_EXPIRY_DAY), "--", name]
         try:
             self._command(args, f"locking {name}")
@@ -548,7 +571,7 @@ class UserAdmin:
     def _lock(self, body: dict, who: dict) -> dict:
         data = self._snapshot()
         acct = self._account(data, body.get("name"))
-        if self._is_locked(acct):
+        if self._is_blocked(acct):
             raise ActionError(409, f"{acct['name']} is already locked")
         self._lock_account(data, acct, who, "locking it")
         self.scheduler.refresh("users")
@@ -575,7 +598,11 @@ class UserAdmin:
         name = acct["name"]
         entry = self.ledger.get(name)
         restore = entry["expires_day"] if entry and isinstance(entry.get("expires_day"), int) else None
-        args = ["usermod"] + (["-U"] if acct["password"] == "locked" else []) + ["-e", str(restore) if restore is not None else "", "--", name]
+        keep_pw_lock = bool(entry and entry.get("kept_password_lock"))
+        args = ["usermod"] + (["-U"] if acct["password"] == "locked" and not keep_pw_lock else [])
+        if acct["expired"] or entry:                                  # never touch a real expiry date of an account we did not lock
+            args += ["-e", str(restore) if restore is not None else ""]
+        args += ["--", name]
         self._command(args, f"unlocking {name}")
         self.ledger.drop(name)
         note = ""

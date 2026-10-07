@@ -48,10 +48,9 @@ class Journal:
     def collect(self, cfg: dict) -> dict:
         args = ["journalctl", "-p", "warning", "-o", "json", "--no-pager", "-q",
                 "--output-fields=PRIORITY,_SYSTEMD_UNIT,SYSLOG_IDENTIFIER,MESSAGE"]
-        if self._cursor:
-            args.append(f"--after-cursor={self._cursor}")
-        else:
-            args += ["--since=-24h", f"-n{self.MAX_ENTRIES}"]
+        # -n bounds the output in both cases: a log storm must not be able to push a minute of entries past the memory cap
+        args.append(f"--after-cursor={self._cursor}" if self._cursor else "--since=-24h")
+        args.append(f"-n{self.MAX_ENTRIES}")
         try:
             out = run(args, timeout=20)
         except CommandError as e:
@@ -63,8 +62,12 @@ class Journal:
                 continue
             self._cursor = e.get("__CURSOR", self._cursor)
             unit = e.get("_SYSTEMD_UNIT") or e.get("SYSLOG_IDENTIFIER") or "kernel"
-            self._entries.append((int(e["__REALTIME_TIMESTAMP"]) / 1e6, int(e.get("PRIORITY", 4)),
-                                  unit.removesuffix(".service"), _message(e.get("MESSAGE"))))
+            try:
+                entry = (int(e["__REALTIME_TIMESTAMP"]) / 1e6, int(e.get("PRIORITY", 4)),
+                         unit.removesuffix(".service"), _message(e.get("MESSAGE")))
+            except (KeyError, ValueError, TypeError):
+                continue                                            # one odd entry must not drop the rest of the batch
+            self._entries.append(entry)
 
         cutoff = time.time() - DAY
         while self._entries and self._entries[0][0] < cutoff:
@@ -219,8 +222,12 @@ class Ssl:
             except CommandError as e:
                 certs.append({"name": name, "error": str(e)})
                 continue
-            end = re.search(r"notAfter=(.+)", out).group(1).strip()
-            expires = datetime.strptime(" ".join(end.split()), "%b %d %H:%M:%S %Y %Z").timestamp()
+            try:
+                end = re.search(r"notAfter=(.+)", out).group(1).strip()
+                expires = datetime.strptime(" ".join(end.split()), "%b %d %H:%M:%S %Y %Z").timestamp()
+            except (AttributeError, ValueError):
+                certs.append({"name": name, "error": "could not read the expiry date"})
+                continue
             issuer = re.search(r"issuer=.*?O\s*=\s*([^,\n]+)", out)
             certs.append({
                 "name": name,

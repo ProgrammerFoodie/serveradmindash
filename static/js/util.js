@@ -200,15 +200,21 @@ export function dataTable({ columns, sortKey, sortDir = -1, empty = "Nothing to 
       body.replaceChildren(el("tr", null, el("td", { colspan: columns.length, class: "empty" }, empty)));
       return;
     }
+    // The body is rebuilt on every refresh; keep keyboard focus on the same row position instead of dropping it to the page.
+    const focused = onRowClick && typeof document !== "undefined" ? [...body.children].indexOf(document.activeElement) : -1;
     body.replaceChildren(...rows.map((row) => {
-      const tr = el("tr", { class: `${rowClass ? rowClass(row) : ""} ${onRowClick ? "clickable" : ""}` },
+      const tr = el("tr", { class: `${rowClass ? rowClass(row) : ""} ${onRowClick ? "clickable" : ""}`, tabindex: onRowClick ? 0 : null },
         columns.map((c) => {
           const content = c.render ? c.render(row) : row[c.key];
           return el("td", { class: `${c.num ? "num" : ""} ${c.cls || ""}` }, content == null || content === "" ? DASH : content);
         }));
-      if (onRowClick) tr.addEventListener("click", () => onRowClick(row));
+      if (onRowClick) {
+        tr.addEventListener("click", () => onRowClick(row));
+        tr.addEventListener("keydown", (e) => { if (e.target === tr && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onRowClick(row); } });
+      }
       return tr;
     }));
+    if (focused >= 0 && body.children[focused] && body.children[focused].focus) body.children[focused].focus();
   }
 
   paintHead();

@@ -81,6 +81,8 @@ class Case(unittest.TestCase):
         self.root = r
         for folder in ("sudoers.d", "systemd", "supervisor/conf.d", "crontabs", "sshd.d", "homes", "data"):
             (r / folder).mkdir(parents=True)
+        for folder in (r, r / "homes"):
+            os.chmod(folder, 0o755)                           # the real parents of a home are 0755 root folders; a test umask of 002 would make them group-writable
         (r / "group").write_text("root:x:0:\nsudo:x:27:alice,carol\nalice:x:1000:\nbob:x:1001:\ncarol:x:1002:\ndaemon:x:1:\n")
         (r / "sudoers").write_text("root ALL=(ALL) ALL\n%sudo ALL=(ALL:ALL) ALL\n")
         self.data = snapshot()
@@ -100,7 +102,7 @@ class Case(unittest.TestCase):
         self.systemctl_show = ""
         self.admin = UserAdmin(cfg, self.actions, FakeScheduler(self), self.alerts, self.audit, self.sessions, r / "data",
                                runner=self.runner, paths=self.paths, clock=lambda: NOW, protect=(str(r / "dashboard"),), forbidden=("/etc", "/usr", "/root"),
-                               access=self.access, mountinfo=str(r / "mountinfo"))
+                               access=self.access, mountinfo=str(r / "mountinfo"), trusted_uids=(os.getuid(), 0))
         self.admin.register()
 
     def access(self, path, mode):
@@ -300,11 +302,22 @@ class LockTest(Case):
         self.refused("lock", 404, name="ghost")
         self.assertEqual(self.calls, [])
 
-    def test_an_account_that_is_already_locked_is_a_409(self):
-        for state in ({"password": "locked"}, {"expired": True}):
-            self.user("bob").update(**state)
-            self.refused("lock", 409, name="bob")
+    def test_an_account_that_is_already_expired_is_a_409(self):
+        self.user("bob").update(expired=True)
+        self.refused("lock", 409, name="bob")
         self.assertEqual(self.calls, [])
+
+    def test_a_locked_password_alone_does_not_stop_ssh_keys_so_lock_still_expires_the_account(self):
+        self.user("bob").update(password="locked")                   # e.g. `passwd -l bob`: keys still work
+        self.do("lock", name="bob")
+        self.assertEqual(self.argv(), [["usermod", "-e", "1", "--", "bob"]])      # no second -L, but the expiry that really blocks it
+        self.assertTrue(self.admin.ledger.get("bob")["kept_password_lock"])
+
+    def test_ban_of_an_account_with_only_a_locked_password_really_blocks_it(self):
+        self.user("bob").update(password="locked")
+        result = self.do("ban", name="bob", confirm="bob")
+        self.assertIn(["usermod", "-e", "1", "--", "bob"], self.argv())
+        self.assertIn("banned (locked)", result["detail"])
 
     def test_the_old_expiry_date_is_remembered_for_unlock(self):
         self.user("bob").update(expires=19900 * 86400)
@@ -381,6 +394,19 @@ class UnlockTest(Case):
         self.refused("unlock", 403, name="root")
         self.refused("unlock", 403, name="daemon")
         self.assertEqual(self.calls, [])
+
+    def test_unlock_keeps_a_password_lock_that_was_there_before_the_dashboard_locked_it(self):
+        self.user("bob").update(password="locked")
+        self.do("lock", name="bob")
+        self.user("bob").update(expired=True, expires=86400)
+        self.calls.clear()
+        self.do("unlock", name="bob")
+        self.assertEqual(self.argv(), [["usermod", "-e", "", "--", "bob"]])      # no -U: the person who ran passwd -l meant it
+
+    def test_unlocking_a_password_only_lock_never_touches_a_real_expiry_date(self):
+        self.user("bob").update(password="locked", expires=19900 * 86400)        # not expired, no ledger entry
+        self.do("unlock", name="bob")
+        self.assertEqual(self.argv(), [["usermod", "-U", "--", "bob"]])
 
     def test_unban_is_the_same_thing(self):
         self.user("bob").update(password="locked", expired=True)
@@ -864,6 +890,50 @@ class LedgerAndGuardTest(Case):
         self.assertEqual(self.admin._target("rename", {"name": "a\nb", "new_name": "c" * 200}).count("\n"), 0)
         self.assertLessEqual(len(self.admin._target("home", {"name": "x" * 500, "path": "y" * 500})), 200)
 
+class HomeParentTest(Case):
+    """Whoever can write above a home can swap the home, so every folder up to / must belong to root and be closed to others."""
+
+    def test_a_parent_owned_by_someone_else_is_refused(self):
+        self.admin.trusted_uids = frozenset({os.getuid() + 4242})      # nobody in this sandbox owns anything: every folder looks foreign
+        message = self.refused("add", 400, name="dave", shell="/bin/bash", home=f"{self.root}/homes/dave")
+        self.assertIn("belongs to another user", message)
+        self.assertEqual(self.calls, [])
+
+    def test_a_group_or_world_writable_parent_is_refused(self):
+        os.chmod(self.root / "homes", 0o775)
+        self.assertIn("can be written to", self.refused("add", 400, name="dave", shell="/bin/bash", home=f"{self.root}/homes/dave"))
+        os.chmod(self.root / "homes", 0o757)
+        self.assertIn("can be written to", self.refused("add", 400, name="dave", shell="/bin/bash", home=f"{self.root}/homes/dave"))
+        self.assertEqual(self.calls, [])
+
+    def test_a_writable_folder_higher_up_counts_too(self):
+        os.chmod(self.root, 0o777)
+        self.assertIn("can be written to", self.refused("add", 400, name="dave", shell="/bin/bash", home=f"{self.root}/homes/dave"))
+
+    def test_the_same_rule_applies_to_moving_a_home(self):
+        os.chmod(self.root / "homes", 0o777)
+        self.assertIn("can be written to", self.refused("home", 400, name="bob", path=f"{self.root}/homes/bob", confirm="bob"))
+
+    def test_a_sticky_world_writable_folder_is_fine_as_an_ancestor(self):
+        # /tmp itself is 1777 and every sandbox here lives below it: the successful add tests rely on this
+        self.assertTrue(os.stat("/tmp").st_mode & 0o1000)
+        self.do("add", name="dave", shell="/bin/bash", home=f"{self.root}/homes/dave")
+
+
+class FailedAddTest(Case):
+    def test_an_account_that_appeared_while_useradd_ran_is_not_removed(self):
+        name_taken = [{"name": "dave", "uid": 1500, "gid": 1500, "home": "/home/dave", "shell": "/bin/bash", "type": "login", "sudo": None,
+                       "groups": [], "password": "set", "expired": False, "expires": None, "can_login": True, "comment": ""}]
+        self.broken = [(["useradd"], "useradd: exit 9: user 'dave' already exists")]
+        calls_before = len(self.calls)
+
+        def appears(args):                                           # someone else creates it between our check and useradd
+            self.data["users"] += name_taken
+        self.effects = [(["useradd"], appears)]
+        self.refused("add", 502, name="dave", shell="/bin/bash", home=f"{self.root}/homes/dave")
+        self.assertNotIn("userdel", [c["args"][0] for c in self.calls[calls_before:]])
+
+
 class PreflightTest(Case):
     """Nothing is changed when the dashboard cannot write where the work has to happen (the read-only data disk was the real-life case)."""
 
@@ -873,6 +943,7 @@ class PreflightTest(Case):
         (self.root / "homes" / "bob").mkdir()
         self.disk = str(self.root / "ro")
         (self.root / "ro").mkdir()
+        os.chmod(self.root / "ro", 0o755)
         self.unwritable = [self.disk]
 
     def assert_refused_cleanly(self, message):
