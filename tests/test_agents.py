@@ -56,7 +56,7 @@ class AgentsTest(unittest.TestCase):
         self.assertEqual(sum(rep["agents"]["Explore"]["tokens"]), 101 + 21)
         self.assertEqual(sum(rep["agents"]["Explore"]["output"]), 11 + 21)
         self.assertEqual(rep["totals"]["runs"], 2)
-        self.assertEqual(len(rep["days"]), 30)
+        self.assertEqual(len(rep["days"]), 365)
         self.assertEqual(rep["scanned"], 2)
 
     def test_a_run_over_midnight_is_split_in_time_but_counted_once(self):

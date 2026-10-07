@@ -25,7 +25,7 @@ check(text().includes("Waiting for data"), "waiting state");
 tab.update({ sections: { agents: { data: { error: "boom" } } } });
 check(text().includes("boom"), "error state");
 tab.update({ sections: { agents: { data: empty } } });
-check(text().includes("No sub-agent runs in the last 30 days"), "empty state");
+check(text().includes("No sub-agent runs in this time window"), "empty state");
 
 tab.update({ sections: { agents: { data } } });
 check(text().includes("general-purpose") && text().includes("Explore"), "agent names");

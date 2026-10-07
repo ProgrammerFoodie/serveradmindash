@@ -2,7 +2,7 @@
 
 Each transcript (`<projects>/<project>/<session>/subagents/agent-<id>.jsonl`, with a `.meta.json` next to it
 naming the agent type) becomes one row in agents.db. Rows are kept after Claude Code deletes the transcript,
-so the 30-day history survives its cleanup. Files are re-read only when their modification time changes.
+so the 365-day history survives its cleanup. Files are re-read only when their modification time changes.
 Only the agent type and a short task title (from .meta.json) ever leave this module, never transcript text.
 """
 
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 from .. import config
 
-DAYS = 30
+DAYS = 365
 KEEP_DAYS = 400
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_LINE_BYTES = 1024 * 1024            # a longer line (a pasted image, a huge tool result) is skipped, never parsed
