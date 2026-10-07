@@ -493,6 +493,9 @@ class UserActionsApiTest(ServerTest):
             def refresh(inner, name):
                 return self.data
 
+            def get(inner, name):
+                return 1.0, self.data
+
         def runner(args, timeout=5.0, ok_codes=(0,), stdin=None, secret=None):
             self.ran.append((args, stdin))
             return ""
@@ -502,7 +505,8 @@ class UserActionsApiTest(ServerTest):
         self.addCleanup(self.work.cleanup)
         self.audit = Audit(os.path.join(self.work.name, "audit.jsonl"))
         self.app.actions = Actions(cfg, Sched(), None, self.audit, runner=runner)
-        self.app.useradmin = UserAdmin(cfg, self.app.actions, Sched(), None, self.audit, self.sessions, self.work.name, runner=runner)
+        self.app.useradmin = UserAdmin(cfg, self.app.actions, Sched(), None, self.audit, self.sessions, self.work.name, runner=runner,
+                                       protect=(), forbidden=("/etc", "/usr", "/root"))
         self.app.useradmin.register()
 
     OPS = ("add", "password", "lock", "unlock", "ban", "unban", "rename", "home", "remove", "end-session", "end-dashboard")
@@ -562,6 +566,55 @@ class UserActionsApiTest(ServerTest):
         status, _, _ = self.req("POST", "/api/users/end-dashboard", {"id": theirs, "current_id": theirs}, token=token_a, csrf=csrf_a)
         self.assertEqual(status, 200)                                                    # a forged current_id does not protect anyone else
         self.assertEqual(self.req("GET", "/api/session", token=token_b)[0], 401)
+
+    def tree(self):
+        base = os.path.join(self.work.name, "disk")
+        for name in ("projects", ".secret", "alice"):
+            os.makedirs(os.path.join(base, name))
+        self.data["users"].append({"name": "carol", "uid": 1002, "gid": 1002, "type": "login", "sudo": None, "home": os.path.join(base, "alice"),
+                                   "password": "set", "expired": False, "expires": None, "processes": 0, "can_login": True})
+        return base
+
+    def test_the_folder_browser_needs_a_session_and_the_switch(self):
+        base = self.tree()
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}")[0], 401)
+        token, _ = self.signed_in()
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}", token=token)[0], 200)
+        self.app.admin = dict(self.app.admin, users=False)
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}", token=token)[0], 404)
+        self.app.admin = dict(self.app.admin, users=True)
+        useradmin, self.app.useradmin = self.app.useradmin, None
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}", token=token)[0], 404)
+        self.app.useradmin = useradmin
+
+    def test_the_folder_browser_lists_folders_and_explains_what_is_greyed_out(self):
+        base = self.tree()
+        token, _ = self.signed_in()
+        status, _, body = self.req("GET", f"/api/folders?path={base}", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual([f["name"] for f in body["folders"]], ["alice", "projects"])               # the hidden one is left out
+        by = {f["name"]: f for f in body["folders"]}
+        self.assertEqual((by["projects"]["selectable"], by["alice"]["enterable"], by["alice"]["reason"]), (True, False, "the home folder of carol"))
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}&hidden=1", token=token)[2]["folders"][0]["name"], ".secret")
+        self.assertIn("places", body)
+        self.assertNotIn("choice", body)
+
+    def test_a_chosen_name_is_checked_in_place(self):
+        base = self.tree()
+        token, _ = self.signed_in()
+        body = self.req("GET", f"/api/folders?path={base}&name=bob", token=token)[2]
+        self.assertEqual(body["choice"], {"path": os.path.join(base, "bob"), "ok": True, "reason": "", "exists": False})
+        self.assertFalse(self.req("GET", f"/api/folders?path={base}&name=a%2Fb", token=token)[2]["choice"]["ok"])
+
+    def test_the_folder_browser_refuses_what_it_should(self):
+        base = self.tree()
+        token, _ = self.signed_in()
+        self.assertEqual(self.req("GET", "/api/folders?path=/etc", token=token)[0], 403)
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}/alice", token=token)[0], 403)
+        self.assertEqual(self.req("GET", "/api/folders?path=relative", token=token)[0], 400)
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}/nope", token=token)[0], 404)
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}/../disk", token=token)[0], 400)
+        self.assertEqual(self.req("GET", f"/api/folders?path={base}/alice&for=carol", token=token)[0], 200)      # the owner may look
 
     def test_ending_a_system_session_and_the_audit_trail(self):
         token, csrf = self.signed_in()

@@ -56,6 +56,16 @@ The same tab manages accounts (all behind a confirmation, the dangerous ones beh
 (root's too), lock and unlock, ban (lock and sign out now), rename, change the home folder, remove, and end a session or another browser's
 dashboard sign-in. Only login users can be locked, banned, renamed, moved or removed; the last user with full sudo rights who can log in is
 always protected; renaming or removing is refused while something still runs as the user or mentions the name, and the refusal says where.
+Home folders are chosen in a folder browser (Browse… next to the path): your disks with free space, a clickable path, and greyed-out folders that say why
+they cannot be used. Before it changes anything the dashboard checks that it can write there, and if a command fails half way it looks at what is true
+now and puts the account back, instead of leaving it pointing at a folder that is not there.
+
+### Homes on another disk
+
+The dashboard runs inside a systemd sandbox that makes the whole file system read-only except the folders listed in `ReadWritePaths` in
+`deploy/server-dashboard.service` (`/etc`, `/home`, `/root` and the data disk `/mnt/Extra20`). A home folder on any other disk can only be created,
+moved or deleted from the dashboard if that disk's mount point is added to that list (`sudo systemctl edit server-dashboard`, add
+`[Service]` and `ReadWritePaths=/mnt/other`) and the service restarted. The dashboard checks before it acts and says so if a folder is read-only to it.
 
 ## Locking it down
 

@@ -44,7 +44,7 @@ export function renameForm(u) {
 export function homeForm(u) {
   return { title: `Change the home folder of ${u.name}`, submitLabel: "Change home folder", danger: true, typed: u.name,
     lines: [`Now: ${u.home}`, "Moving needs the user to have no running programs, and the new folder must not exist yet. Without moving, the new folder is created (or an existing folder of theirs is used) and the old one stays where it is."],
-    fields: [{ name: "path", label: "New home folder", type: "text", required: true, maxLength: 200, placeholder: `/home/${u.name}` },
+    fields: [{ name: "path", label: "New home folder", type: "folder", required: true, maxLength: 200, placeholder: `/home/${u.name}`, help: "Type a path, or Browse… to pick the folder." },
       { name: "move", label: "Move the current contents there", type: "checkbox", value: true }] };
 }
 
@@ -63,7 +63,7 @@ export function addForm(data) {
       { name: "name", label: "User name", type: "text", required: true, pattern: NAME_PATTERN, patternMessage: NAME_MESSAGE, maxLength: 32 },
       { name: "comment", label: "Full name (optional)", type: "text", maxLength: 100, pattern: "[^:,\\\\\\n\\r]*", patternMessage: "The full name cannot contain : , \\ or line breaks." },
       { name: "shell", label: "Shell", type: "select", options: shells.map((s) => ({ value: s, label: s })), value: shells.includes("/bin/bash") ? "/bin/bash" : shells[0] },
-      { name: "home", label: "Home folder (optional)", type: "text", maxLength: 200, placeholder: "/home/<name>", help: "Leave empty for /home/<name>. It must not exist yet." },
+      { name: "home", label: "Home folder (optional)", type: "folder", maxLength: 200, placeholder: "/home/<name>", help: "Leave empty for /home/<name>. It must not exist yet." },
       ...(data.has_sudo_group ? [{ name: "sudo", label: "Give sudo rights (member of the sudo group)", type: "checkbox" }] : []),
       ...passwordFields("Password (optional)", false),
       { name: "must_change", label: "They must choose a new password at the first login", type: "checkbox" },
@@ -77,6 +77,11 @@ export function addBody(values) {
   if (values.password) body.password = values.password;
   return body;
 }
+
+const dirname = (path) => (path || "").replace(/\/[^/]*$/, "") || (path ? "/" : "");
+
+/** Browse… for a home folder: start next to what is typed (or next to the current home) and offer the user name as the folder name. */
+const browseFor = (ctx, u) => (field, values) => ctx.pickFolder({ start: dirname(values[field] || (u && u.home) || ""), name: u ? u.name : (values.name || ""), forUser: u ? u.name : "" });
 
 const CONFIRMS = {
   lock: (u) => ({ title: `Lock ${u.name}?`, confirmLabel: "Lock",
@@ -101,7 +106,7 @@ export async function runAction(ctx, id, u) {
   }
   const forms = { password: passwordForm, rename: renameForm, home: homeForm, remove: removeForm };
   if (!forms[id]) return false;
-  const values = await ctx.askForm(forms[id](u));
+  const values = await ctx.askForm({ ...forms[id](u), browse: browseFor(ctx, u) });
   if (!values) return false;
   const body = { name: u.name };
   if (id === "password") Object.assign(body, { password: values.password, must_change: values.must_change });
@@ -112,7 +117,7 @@ export async function runAction(ctx, id, u) {
 }
 
 export async function addUser(ctx, data) {
-  const values = await ctx.askForm(addForm(data));
+  const values = await ctx.askForm({ ...addForm(data), browse: browseFor(ctx, null) });
   return values ? !!(await ctx.act("/api/users/add", addBody(values))) : false;
 }
 

@@ -45,6 +45,8 @@ FORBIDDEN_HOME_ROOTS = ("/bin", "/boot", "/dev", "/etc", "/lib", "/lib32", "/lib
                         "/sbin", "/sys", "/usr", "/var", "/tmp", "/snap", "/lost+found")
 HOME_EXCEPTIONS = ("/var/www",)
 LOCKED_EXPIRY_DAY = 1                      # `usermod -e 1`: the day after the epoch, long past, so the account is expired
+REAL_FILESYSTEMS = {"ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "zfs", "jfs", "reiserfs"}
+MAX_BROWSE = 500
 OPS = ("add", "password", "lock", "unlock", "ban", "unban", "rename", "home", "remove", "end_session", "end_dashboard")
 
 
@@ -76,6 +78,27 @@ def home_problem(path, accounts: list[dict], own: str | None = None, protect: tu
         nested = path.startswith(home + "/") or home.startswith(path + "/")
         if path == home or (nested and other["type"] != "system"):
             return f"that overlaps the home folder of {other['name']} ({home})"
+    return None
+
+
+def parse_mountinfo(text: str) -> list[dict]:
+    """Mounts from /proc/self/mountinfo: [{"root", "target", "fstype", "source"}]. `root` is the folder of the filesystem that is mounted,
+    so a real disk has root "/" and a bind mount of a sub-folder (what the service sandbox makes of /home) has something else."""
+    unescape = lambda t: re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), t)       # noqa: E731 - spaces appear as \040
+    mounts = []
+    for line in text.splitlines():
+        left, sep, right = line.partition(" - ")
+        a, b = left.split(), right.split()
+        if sep and len(a) >= 5 and len(b) >= 2:
+            mounts.append({"root": unescape(a[3]), "target": unescape(a[4]), "fstype": b[0], "source": b[1]})
+    return mounts
+
+
+def folder_name_problem(name) -> str | None:
+    if not isinstance(name, str) or not name or len(name) > 64:
+        return "a folder name is 1 to 64 characters"
+    if name in (".", "..") or "/" in name or any(ord(c) < 32 or c == "\x7f" for c in name) or name != name.strip():
+        return "a folder name cannot contain '/' or control characters, or be '.' or '..'"
     return None
 
 
@@ -258,7 +281,7 @@ class Dependents:
 
 class UserAdmin:
     def __init__(self, cfg: dict, actions, scheduler, alerts, audit, sessions, data_dir, *, runner=run, paths: dict | None = None,
-                 clock=time.time, protect=None, forbidden=FORBIDDEN_HOME_ROOTS):
+                 clock=time.time, protect=None, forbidden=FORBIDDEN_HOME_ROOTS, access=os.access, mountinfo="/proc/self/mountinfo"):
         self.cfg, self.actions, self.scheduler, self.alerts, self.audit, self.sessions = cfg, actions, scheduler, alerts, audit, sessions
         self._run, self._clock = runner, clock
         self.paths = {"group": "/etc/group", "sudoers": "/etc/sudoers", "sudoers_dir": "/etc/sudoers.d", "systemd_dir": "/etc/systemd/system",
@@ -266,6 +289,7 @@ class UserAdmin:
                       "sshd_dir": "/etc/ssh/sshd_config.d", **(paths or {})}
         self.protect = tuple(protect) if protect is not None else (str(ROOT),)
         self.forbidden = tuple(forbidden)
+        self._access, self.mountinfo = access, mountinfo
         self.ledger = LockLedger(Path(data_dir) / "locks.json")
         self.dependents = Dependents(cfg, runner, self.paths)
 
@@ -350,6 +374,66 @@ class UserAdmin:
             return blockers + found + [f"{n}" for n in notes], []
         return blockers + found, notes
 
+    # ---- looking before acting, and afterwards -----------------------------------------------
+
+    def _need_writable(self, folder: str, doing: str) -> None:
+        """Refuse before anything is changed if the dashboard's service cannot write in `folder` (a read-only mount, for one)."""
+        if not self._access(folder, os.W_OK | os.X_OK):
+            raise ActionError(409, f"the dashboard cannot write in {folder}, so it cannot {doing}. That folder is read-only to the dashboard's "
+                                   "service: add its disk to ReadWritePaths in the service unit and restart it (see the README), or choose another folder")
+
+    def _fresh_account(self, name: str) -> dict | None:
+        try:
+            return next((u for u in self._snapshot()["users"] if u["name"] == name), None)
+        except ActionError:
+            return None
+
+    def _after_failed_home_change(self, name: str, old_home: str, new_home: str, reason: str) -> ActionError:
+        """`usermod -d NEW -m` writes the new path to /etc/passwd BEFORE it moves anything, so "failed" can mean "the account now points at nothing".
+        Look at what is true now and, if the account points at a folder that is not there while the old one is, put it back."""
+        fresh = self._fresh_account(name)
+        if fresh is None:
+            return ActionError(502, f"{reason}; the account could not be read afterwards, so check its home folder yourself ({old_home} or {new_home})")
+        now = fresh["home"]
+        if now == old_home:
+            return ActionError(502, f"{reason}; nothing was changed")
+        if now != new_home:
+            return ActionError(502, f"{reason}; the home folder of {name} is now {now}, which is neither {old_home} nor {new_home}: check it")
+        old_there, new_there = os.path.isdir(old_home), os.path.isdir(new_home)
+        if new_there:
+            return ActionError(502, f"{reason}; the account now uses {new_home}" + (f", and {old_home} is still there as well: check what is left in it" if old_there else ""))
+        if not old_there:
+            return ActionError(502, f"{reason}; neither {old_home} nor {new_home} exists: look for the files before doing anything else")
+        try:
+            self._run(["usermod", "-d", old_home, "--", name], timeout=COMMAND_TIMEOUT_S)
+        except CommandError as e:
+            log.error("could not put the home folder of %s back to %s: %s", name, old_home, e)
+            return ActionError(502, f"{reason}; the account points at {new_home}, which does not exist, and putting it back failed too ({e}): "
+                                    f"run `usermod -d {old_home} {name}` as root")
+        self.scheduler.refresh("users")
+        return ActionError(502, f"{reason}; nothing was moved and the account was put back to {old_home}")
+
+    def _after_failed_add(self, name: str, home: str, reason: str) -> ActionError:
+        """useradd can fail after it has already created the account (for instance when the home folder cannot be made)."""
+        if self._fresh_account(name) is None:
+            return ActionError(502, reason)
+        left = f" The folder {home} was created and left in place." if os.path.lexists(home) else ""
+        try:
+            self._run(["userdel", "--", name], timeout=COMMAND_TIMEOUT_S)
+        except CommandError as e:
+            log.error("could not remove the half-created account %s: %s", name, e)
+            return ActionError(502, f"{reason}; the account {name} was half created and removing it failed too ({e}): remove it with Remove, or `userdel {name}` as root.{left}")
+        self.scheduler.refresh("users")
+        return ActionError(502, f"{reason}; the half-created account was removed again.{left}")
+
+    def _after_failed_remove(self, name: str, home: str, delete_home: bool, reason: str) -> ActionError:
+        if self._fresh_account(name) is not None:
+            return ActionError(502, f"{reason}; the account is still there")
+        self.ledger.drop(name)
+        self.scheduler.refresh("users")
+        folder = f", but its home folder {home} was not deleted: remove it by hand if you want it gone" if delete_home else ""
+        return ActionError(502, f"{reason}; the account is gone{folder}")
+
     # ---- add ---------------------------------------------------------------------------------
 
     def _new_name(self, data: dict, name, groups: dict) -> str:
@@ -390,6 +474,7 @@ class UserAdmin:
             raise ActionError(400, problem)
         if os.path.lexists(home):
             raise ActionError(409, f"{home} already exists; choose another folder (nothing is taken over or overwritten)")
+        self._need_writable(posixpath.dirname(home), "create the home folder")
         sudo, must_change = body.get("sudo", False), body.get("must_change", False)
         if not isinstance(sudo, bool) or not isinstance(must_change, bool):
             raise ActionError(400, "sudo and must_change must be true or false")
@@ -403,7 +488,10 @@ class UserAdmin:
         else:
             password = None
         args = ["useradd", "-m", "-U", "-d", home, "-s", shell, "-c", comment] + (["-G", "sudo"] if sudo else []) + ["--", name]
-        self._command(args, f"creating {name}")
+        try:
+            self._command(args, f"creating {name}")
+        except ActionError as e:
+            raise self._after_failed_add(name, home, e.message) from None
         steps = [f"created {name} with home {home}"]
         if password is not None:
             try:
@@ -538,7 +626,7 @@ class UserAdmin:
     def _rename(self, body: dict, who: dict) -> dict:
         data, groups = self._snapshot(), self._groups()
         acct = self._account(data, body.get("name"))
-        old = acct["name"]
+        old, old_home = acct["name"], acct["home"]
         require_confirmation(body, old)
         new = self._new_name(data, body.get("new_name"), groups)
         rename_home = body.get("rename_home", False)
@@ -557,6 +645,7 @@ class UserAdmin:
                 raise ActionError(400, f"the home folder cannot be renamed: {problem}")
             if os.path.lexists(new_home):
                 raise ActionError(409, f"{new_home} already exists")
+            self._need_writable(posixpath.dirname(acct["home"]), "rename the home folder")
         private = groups.get(old, {}).get("gid") == acct["gid"]
         self._command(["usermod", "-l", new, "--", old], f"renaming {old}")
         steps = [f"{old} is now {new}"]
@@ -577,8 +666,7 @@ class UserAdmin:
                 self._command(["usermod", "-d", new_home, "-m", "--", new], "moving the home folder")
                 steps.append(f"home folder moved to {new_home}")
             except ActionError as e:
-                self.scheduler.refresh("users")
-                raise ActionError(502, f"{old} is now {new}, but the home folder was not moved ({e.message}); use Change home folder") from None
+                raise self._after_failed_home_change(new, old_home, new_home, f"{old} is now {new}, but {e.message}") from None
         self.scheduler.refresh("users")
         return {"ok": True, "detail": "; ".join(steps)}
 
@@ -587,7 +675,7 @@ class UserAdmin:
     def _home(self, body: dict, who: dict) -> dict:
         data = self._snapshot()
         acct = self._account(data, body.get("name"))
-        name = acct["name"]
+        name, old_home = acct["name"], acct["home"]
         require_confirmation(body, name)
         path, move = body.get("path"), body.get("move", False)
         if not isinstance(move, bool):
@@ -606,6 +694,8 @@ class UserAdmin:
                 raise ActionError(400, f"its current home folder ({acct['home']}) is not an ordinary folder that can be moved" + (f": {problem}" if problem else ""))
             if os.path.lexists(path):
                 raise ActionError(409, f"{path} already exists; moving needs a folder that does not exist yet")
+            self._need_writable(posixpath.dirname(path), "create the new home folder")
+            self._need_writable(posixpath.dirname(acct["home"]), "move the old home folder away")
             args = ["usermod", "-d", path, "-m", "--", name]
         else:
             if os.path.lexists(path):
@@ -613,18 +703,19 @@ class UserAdmin:
                 if not stat.S_ISDIR(st.st_mode) or st.st_uid != acct["uid"]:
                     raise ActionError(409, f"{path} exists but is not a folder owned by {name}")
             else:
+                self._need_writable(posixpath.dirname(path), "create the new home folder")
                 self._create_home(path, acct)
                 created = True
             args = ["usermod", "-d", path, "--", name]
         try:
             self._command(args, f"changing the home folder of {name}")
-        except ActionError:
+        except ActionError as e:
             if created:
                 try:
                     os.rmdir(path)                                  # we made it a moment ago, so it is empty
                 except OSError:
                     log.warning("could not remove the folder %s created for %s", path, name)
-            raise
+            raise self._after_failed_home_change(name, old_home, path, e.message) from None
         self.scheduler.refresh("users")
         how = "moved there" if move else "created" if created else "now used"
         return {"ok": True, "detail": f"the home folder of {name} is {path} ({how})"}
@@ -663,10 +754,118 @@ class UserAdmin:
                 st = os.lstat(acct["home"])
                 if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != acct["uid"]:
                     raise ActionError(409, f"{acct['home']} is not a folder owned by {name}, so it is not deleted")
-        self._command(["userdel"] + (["-r"] if delete_home else []) + ["--", name], f"removing {name}")
+                self._need_writable(posixpath.dirname(acct["home"]), "delete the home folder")
+        try:
+            self._command(["userdel"] + (["-r"] if delete_home else []) + ["--", name], f"removing {name}")
+        except ActionError as e:
+            raise self._after_failed_remove(name, acct["home"], delete_home, e.message) from None
         self.ledger.drop(name)
         self.scheduler.refresh("users")
         detail = f"{name} is removed" + (f", with its home folder {acct['home']}" if delete_home else f"; its home folder {acct['home']} is kept")
         if notes:
             detail += ". Left behind: " + "; ".join(notes)
         return {"ok": True, "detail": detail}
+
+    # ---- the folder browser ------------------------------------------------------------------
+
+    def _accounts_for_browsing(self) -> list[dict]:
+        _, data = self.scheduler.get("users")                  # a minute old at most: the action itself checks again
+        return (data or {}).get("users", [])
+
+    def places(self) -> list[dict]:
+        """Where homes usually live: /home and every real disk, with free space and whether the dashboard may write there."""
+        try:
+            mounts = parse_mountinfo(Path(self.mountinfo).read_text())
+        except OSError:
+            mounts = []
+        wanted = {"/home": None}
+        for m in mounts:
+            target = m["target"]
+            if m["root"] == "/" and m["fstype"] in REAL_FILESYSTEMS and target != "/" and not any(target == t or target.startswith(t + "/") for t in self.forbidden):
+                wanted[target] = m["source"]
+        out = []
+        for target in sorted(wanted, key=lambda t: (t != "/home", t)):
+            if not os.path.isdir(target):
+                continue
+            device = wanted[target] or next((m["source"] for m in sorted(mounts, key=lambda m: -len(m["target"]))
+                                             if target == m["target"] or target.startswith(m["target"].rstrip("/") + "/")), "")
+            try:
+                st = os.statvfs(target)
+                free, total = st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+            except OSError:
+                free = total = None
+            out.append({"path": target, "device": device, "free": free, "total": total, "writable": bool(self._access(target, os.W_OK | os.X_OK))})
+        return out
+
+    def _plain_dir(self, path) -> str:
+        if not isinstance(path, str) or not path.startswith("/") or len(path) > 300 or any(ord(c) < 32 or c == "\x7f" for c in path):
+            raise ActionError(400, "a folder path starting with / is required")
+        if path != posixpath.normpath(path):
+            raise ActionError(400, "write the path in its plain form: no '..', '.', double or trailing slashes")
+        if not os.path.isdir(path):
+            raise ActionError(404, f"{path} is not a folder")
+        if os.path.realpath(path) != path:
+            raise ActionError(400, f"{path} is, or lies behind, a symbolic link")
+        return path
+
+    def _enter_problem(self, path: str, users: list[dict], own: str | None) -> str | None:
+        """Why the browser will not open `path` at all (as opposed to not offering it as a choice)."""
+        if path == "/":
+            return None
+        for top in self.forbidden:
+            if (path == top or path.startswith(top + "/")) and not any(path == e or path.startswith(e + "/") for e in HOME_EXCEPTIONS):
+                return f"{top} is a system folder"
+        for folder in self.protect:
+            if path == folder or path.startswith(folder + "/"):
+                return "the dashboard's own folder"
+        for u in users:
+            home = u["home"]
+            if u["name"] != own and u["type"] != "system" and len(home.strip("/").split("/")) >= 2 and (path == home or path.startswith(home + "/")):
+                return f"the home folder of {u['name']}"
+        return None
+
+    def browse(self, path=None, hidden: bool = False, own: str | None = None, name=None) -> dict:
+        """A folder listing for the home folder picker. Folders only, nothing behind a symbolic link, system places and other people's
+        homes greyed out with the reason. With `name`, also whether `path/name` would be an acceptable home folder."""
+        places = self.places()
+        if not path:
+            path = places[0]["path"] if places else "/"
+        path = self._plain_dir(path)
+        users = self._accounts_for_browsing()
+        problem = self._enter_problem(path, users, own)
+        if problem:
+            raise ActionError(403, f"{path} cannot be opened: {problem}")
+        try:
+            with os.scandir(path) as listing:
+                found = list(listing)
+        except OSError as e:
+            raise ActionError(403, f"{path} cannot be read ({e.strerror})") from None
+        folders = []
+        for entry in found:
+            if entry.name.startswith(".") and not hidden:
+                continue
+            try:
+                link = entry.is_symlink()
+                if not (entry.is_dir(follow_symlinks=True) if link else entry.is_dir(follow_symlinks=False)):
+                    continue
+            except OSError:
+                continue
+            full = posixpath.join(path, entry.name) if path != "/" else "/" + entry.name
+            if link:
+                folders.append({"name": entry.name, "path": full, "kind": "link", "enterable": False, "selectable": False, "reason": "a symbolic link"})
+                continue
+            enter = self._enter_problem(full, users, own)
+            choose = None if enter else home_problem(full, users, own=own, protect=self.protect, forbidden=self.forbidden)
+            folders.append({"name": entry.name, "path": full, "kind": "folder", "enterable": enter is None, "selectable": enter is None and choose is None,
+                            "reason": enter or choose or ""})
+        folders.sort(key=lambda f: f["name"].lower())
+        out = {"path": path, "parent": posixpath.dirname(path) if path != "/" else None, "places": places, "folders": folders[:MAX_BROWSE],
+               "truncated": len(folders) > MAX_BROWSE, "writable": bool(self._access(path, os.W_OK | os.X_OK)),
+               "selectable": home_problem(path, users, own=own, protect=self.protect, forbidden=self.forbidden) is None}
+        out["reason"] = "" if out["selectable"] else home_problem(path, users, own=own, protect=self.protect, forbidden=self.forbidden)
+        if name is not None:
+            bad = folder_name_problem(name)
+            target = posixpath.join(path, name) if not bad else None
+            why = bad or home_problem(target, users, own=own, protect=self.protect, forbidden=self.forbidden)
+            out["choice"] = {"path": target, "ok": why is None, "reason": why or "", "exists": bool(target) and os.path.lexists(target)}
+        return out

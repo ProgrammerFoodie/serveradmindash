@@ -229,7 +229,21 @@ every user name. Passwords go to `chpasswd` on **stdin only** (never argv, never
 
 Typed confirmations: remove, rename, ban and change home require typing the user name.
 
-## Phase 16b - fixes after the first real test, and a folder browser  (planned)
+## Phase 16b - fixes after the first real test, and a folder browser  (done)
+
+**As built (2026-10-07):** all five points below were done as planned, with these details.
+- Sandbox: `ReadWritePaths=/mnt/Extra20 /etc /home /root -/var/spool/cron -/var/mail` (the pinned test was updated); README says how to add another disk.
+  After installing, check it took effect: `grep Extra20 /proc/$(systemctl show -p MainPID --value server-dashboard)/mountinfo` must no longer say `ro`.
+- Looking before acting: `UserAdmin._need_writable()` (uses `os.access`, so a read-only mount is caught) before add, create-home, move, rename-with-home and delete-home.
+- After a failure: `_after_failed_home_change`, `_after_failed_add`, `_after_failed_remove` read the account fresh and say what is true; a half-done
+  `usermod -d -m` that left the account pointing at a missing folder is put back with `usermod -d <old>` (never when the files were copied: then the
+  message says to check both folders); a `useradd` that created the account but failed is undone with `userdel` (never `-r`).
+- Folder browser: `GET /api/folders?path=&hidden=&for=&name=` and `static/js/folderpicker.js`; places come from the mount table (only real disks
+  with `root == "/"`, so the sandbox's bind mounts of `/etc` and `/home` are ignored, plus `/home`). Used by the home-folder fields via a Browse… button.
+- Found on the way: the picker passed `null` to `replaceChildren` (the browser would print "null"); the fake DOM used by the tests now throws on that.
+- The earlier sections below are the plan as written.
+
+**Original plan:**
 
 ### What the real test showed (2026-10-07, account `testdata`)
 Evidence, read from the live system: the account's home in `/etc/passwd` is `/mnt/Extra20/datatest`, that folder does not exist, and the files are

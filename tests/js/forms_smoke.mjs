@@ -104,6 +104,30 @@ const SPEC = { title: "Add a user", submitLabel: "Add", fields: [
   check(field(dialog, "a").value === "initial", "text fields start with their value");
 }
 
+// ---- the folder field with Browse…
+{
+  const dialog = makeDialog();
+  const calls = [];
+  const answer = askForm(dialog, { title: "Home", submitLabel: "Go", browse: async (name, values) => { calls.push([name, values]); return calls.length === 1 ? "/mnt/Extra20/bob" : null; },
+    fields: [{ name: "name", label: "Name", type: "text", value: "bob" }, { name: "path", label: "Folder", type: "folder", value: "/home/x", required: true }] });
+  const pathInput = field(dialog, "path"), browse = button(dialog, "Browse…");
+  check(!!pathInput && !!browse && !browse.disabled, "a folder field is a text box with a Browse… button");
+  browse.click(); await new Promise((r) => setTimeout(r, 10));
+  check(JSON.stringify(calls[0]) === JSON.stringify(["path", { name: "bob", path: "/home/x" }]), `Browse… is given the field and the current values: ${JSON.stringify(calls[0])}`);
+  check(pathInput.value === "/mnt/Extra20/bob", "what the picker returns goes into the box");
+  browse.click(); await new Promise((r) => setTimeout(r, 10));
+  check(pathInput.value === "/mnt/Extra20/bob", "cancelling the picker leaves the box alone");
+  pathInput.value = "/typed/by/hand";
+  submit(dialog);
+  const result = await answer;
+  check(result && result.path === "/typed/by/hand", "a path typed by hand still works");
+}
+{
+  const dialog = makeDialog();
+  askForm(dialog, { title: "Home", fields: [{ name: "path", label: "Folder", type: "folder" }] });
+  check(button(dialog, "Browse…").disabled, "without a picker the button is off, the box still works");
+}
+
 // ---- which buttons an account gets
 const user = (over) => ({ name: "bob", type: "login", password: "set", expired: false, home: "/home/bob", ...over });
 const ids = (u) => actions.accountActions(u).map((a) => a.id);
@@ -116,11 +140,12 @@ check(actions.accountActions(user()).filter((a) => a.danger).map((a) => a.id).jo
 
 // ---- the flows
 function makeCtx({ confirm = true, form = {} } = {}) {
-  const log = { confirms: [], typed: [], forms: [], sent: [] };
+  const log = { confirms: [], typed: [], forms: [], sent: [], picks: [] };
   return { log, ctx: {
     confirm: async (o) => { log.confirms.push(o); return confirm; },
     confirmTyped: async (o) => { log.typed.push(o); return confirm; },
     askForm: async (o) => { log.forms.push(o); return form === null ? null : (typeof form === "function" ? form(o) : form); },
+    pickFolder: async (o) => { log.picks.push(o); return "/mnt/Extra20/chosen"; },
     act: async (path, body) => { log.sent.push([path, body]); return { ok: true }; },
   } };
 }
@@ -180,6 +205,26 @@ const sent = (log) => JSON.stringify(log.sent);
   for (const id of ["password", "rename", "home", "remove"]) await actions.runAction(ctx, id, user());
   check(log.sent.length === 0, "cancelling any form sends nothing");
   check(await actions.runAction(ctx, "no-such-action", user()) === false && log.sent.length === 0, "an unknown action does nothing");
+}
+
+// ---- the home folder forms use the picker
+check(actions.homeForm(user()).fields.find((f) => f.name === "path").type === "folder", "the home folder is a folder field");
+check(actions.addForm({}).fields.find((f) => f.name === "home").type === "folder", "so is the home folder when adding a user");
+{
+  const { ctx, log } = makeCtx({ form: async (o) => ({ path: await o.browse("path", { path: "" }), move: true }) });
+  await actions.runAction(ctx, "home", user({ home: "/home/bob" }));
+  check(JSON.stringify(log.picks[0]) === JSON.stringify({ start: "/home", name: "bob", forUser: "bob" }), `Browse… starts next to the current home, offers the user name: ${JSON.stringify(log.picks[0])}`);
+  check(log.sent[0][1].path === "/mnt/Extra20/chosen", "and the chosen folder is what is sent");
+}
+{
+  const { ctx, log } = makeCtx({ form: async (o) => { await o.browse("path", { path: "/srv/people/bob" }); return null; } });
+  await actions.runAction(ctx, "home", user({ home: "/home/bob" }));
+  check(log.picks[0].start === "/srv/people", "it starts next to what has been typed, if anything");
+}
+{
+  const { ctx, log } = makeCtx({ form: async (o) => { await o.browse("home", { name: "dave", home: "" }); return null; } });
+  await actions.addUser(ctx, { shells: ["/bin/bash"] });
+  check(JSON.stringify(log.picks[0]) === JSON.stringify({ start: "", name: "dave", forUser: "" }), `when adding, the typed user name is offered and no account is involved: ${JSON.stringify(log.picks[0])}`);
 }
 
 // ---- add user

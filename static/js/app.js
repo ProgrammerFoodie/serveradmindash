@@ -3,6 +3,7 @@
 import { api, AuthError } from "./api.js";
 import { askConfirm } from "./confirm.js";
 import { askForm } from "./formdialog.js";
+import { pickFolder } from "./folderpicker.js";
 import { watchIdle } from "./idle.js";
 import { append, clear, el, fmtAgo, fmtCountdown, fmtDuration, store } from "./util.js";
 import overview from "./tabs/overview.js";
@@ -24,6 +25,7 @@ const statusbar = document.getElementById("statusbar");
 const powerBarEl = document.getElementById("powerbar");
 const dialog = document.getElementById("dlg");
 const confirmDialog = document.getElementById("confirm");
+const pickerDialog = document.getElementById("picker");
 const toastEl = document.getElementById("toast");
 const statusDot = document.getElementById("status-dot");
 const statusText = document.getElementById("status-text");
@@ -77,6 +79,8 @@ ctx.confirm = (options) => askConfirm(confirmDialog, options);
 ctx.confirmTyped = ({ word, ...options }) => askConfirm(confirmDialog, { ...options, typed: word });
 /** A small form (see formdialog.js). Resolves with the values, or null if cancelled. */
 ctx.askForm = (options) => askForm(confirmDialog, options);
+/** Choose a folder in a browser instead of typing its path. Resolves with the path, or null. */
+ctx.pickFolder = (options) => pickFolder(pickerDialog, api, options);
 
 /** Perform an action on the server, tell the person what happened, refresh the page data. Returns the result or null. */
 ctx.actionSeq = 0;

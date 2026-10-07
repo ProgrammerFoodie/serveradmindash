@@ -9,6 +9,7 @@ from pathlib import Path
 from dashboard import auth, config
 from dashboard.actions import ActionError, Actions
 from dashboard.audit import Audit
+import dashboard.useradmin as users_mod
 from dashboard.useradmin import UserAdmin, home_problem, password_problem
 from dashboard.util import CommandError
 
@@ -54,6 +55,9 @@ class FakeScheduler:
         self.case.refreshes += 1
         return self.case.data
 
+    def get(self, name):
+        return 1.0, self.case.data
+
 
 class FakeAlerts:
     server_name = "myhost"
@@ -81,7 +85,7 @@ class Case(unittest.TestCase):
         (r / "sudoers").write_text("root ALL=(ALL) ALL\n%sudo ALL=(ALL:ALL) ALL\n")
         self.data = snapshot()
         self.refreshes = 0
-        self.calls, self.broken = [], []
+        self.calls, self.broken, self.effects, self.unwritable = [], [], [], []
         self.alerts = FakeAlerts()
         self.audit = Audit(r / "audit.jsonl")
         cfg = json.loads(config.EXAMPLE_PATH.read_text())
@@ -95,11 +99,19 @@ class Case(unittest.TestCase):
                       "sshd_dir": str(r / "sshd.d")}
         self.systemctl_show = ""
         self.admin = UserAdmin(cfg, self.actions, FakeScheduler(self), self.alerts, self.audit, self.sessions, r / "data",
-                               runner=self.runner, paths=self.paths, clock=lambda: NOW, protect=(str(r / "dashboard"),), forbidden=("/etc", "/usr", "/root"))
+                               runner=self.runner, paths=self.paths, clock=lambda: NOW, protect=(str(r / "dashboard"),), forbidden=("/etc", "/usr", "/root"),
+                               access=self.access, mountinfo=str(r / "mountinfo"))
         self.admin.register()
+
+    def access(self, path, mode):
+        """A fake os.access: everything is writable except what a test marks as read-only."""
+        return not any(path == p or path.startswith(p + "/") for p in self.unwritable)
 
     def runner(self, args, timeout=5.0, ok_codes=(0,), stdin=None, secret=None):
         self.calls.append({"args": list(args), "stdin": stdin, "secret": secret, "ok_codes": ok_codes})
+        for prefix, effect in self.effects:                    # what the real command does to the system BEFORE it fails
+            if args[:len(prefix)] == prefix:
+                effect(args)
         for prefix, message in self.broken:
             if args[:len(prefix)] == prefix:
                 raise CommandError(message)
@@ -558,10 +570,21 @@ class RenameTest(Case):
         message = self.refused("rename", 502, name="bob", new_name="robert", confirm="bob")
         self.assertIn("account is now called robert but its group is still bob", message)
 
-    def test_a_failed_home_move_is_reported_as_a_partial_success(self):
-        self.broken = [(["usermod", "-d"], "usermod: exit 12: cannot move")]
+    def test_a_failed_home_move_after_a_rename_puts_the_home_back_and_says_what_is_what(self):
+        old_home, new_home = str(self.root / "homes" / "bob"), str(self.root / "homes" / "robert")
+
+        def renamed(args):
+            self.user("bob")["name"] = "robert"
+
+        def pointed_at_new(args):
+            self.user("robert")["home"] = new_home                  # usermod writes /etc/passwd first, then fails to move
+
+        self.effects = [(["usermod", "-l"], renamed), (["usermod", "-d"], pointed_at_new)]
+        self.broken = [(["usermod", "-d", new_home], "usermod: exit 12: cannot move")]
         message = self.refused("rename", 502, name="bob", new_name="robert", confirm="bob", rename_home=True)
-        self.assertIn("bob is now robert, but the home folder was not moved", message)
+        self.assertIn("bob is now robert, but moving the home folder failed", message)
+        self.assertIn("nothing was moved and the account was put back", message)
+        self.assertEqual(self.argv()[-1], ["usermod", "-d", old_home, "--", "robert"])
 
     def test_a_remembered_expiry_follows_the_new_name(self):
         self.admin.ledger.put("bob", 19900, "x")
@@ -840,6 +863,334 @@ class LedgerAndGuardTest(Case):
             self.assertIsInstance(label["target"], str)
         self.assertEqual(self.admin._target("rename", {"name": "a\nb", "new_name": "c" * 200}).count("\n"), 0)
         self.assertLessEqual(len(self.admin._target("home", {"name": "x" * 500, "path": "y" * 500})), 200)
+
+class PreflightTest(Case):
+    """Nothing is changed when the dashboard cannot write where the work has to happen (the read-only data disk was the real-life case)."""
+
+    def setUp(self):
+        super().setUp()
+        self.user("bob").update(uid=ME, gid=MY_GID, home=str(self.root / "homes" / "bob"))
+        (self.root / "homes" / "bob").mkdir()
+        self.disk = str(self.root / "ro")
+        (self.root / "ro").mkdir()
+        self.unwritable = [self.disk]
+
+    def assert_refused_cleanly(self, message):
+        self.assertIn("cannot write in", message)
+        self.assertIn("ReadWritePaths", message)
+        self.assertEqual(self.calls, [])
+
+    def test_adding_a_user_with_a_home_on_a_read_only_disk(self):
+        self.assert_refused_cleanly(self.refused("add", 409, name="dave", shell="/bin/bash", home=f"{self.disk}/dave"))
+        self.assertFalse(os.path.exists(f"{self.disk}/dave"))
+
+    def test_changing_the_home_to_a_read_only_disk_creates_nothing(self):
+        self.assert_refused_cleanly(self.refused("home", 409, name="bob", path=f"{self.disk}/bob", confirm="bob"))
+        self.assertFalse(os.path.exists(f"{self.disk}/bob"))
+
+    def test_moving_to_a_read_only_disk_is_refused_before_usermod_runs(self):
+        self.assert_refused_cleanly(self.refused("home", 409, name="bob", path=f"{self.disk}/bob", confirm="bob", move=True))
+
+    def test_moving_away_from_a_read_only_disk_is_refused_too(self):
+        (self.root / "homes").mkdir(exist_ok=True)
+        self.user("bob")["home"] = f"{self.disk}/bob"
+        os.mkdir(f"{self.disk}/bob")
+        self.unwritable = [self.disk]
+        message = self.refused("home", 409, name="bob", path=str(self.root / "homes" / "elsewhere"), confirm="bob", move=True)
+        self.assertIn("move the old home folder away", message)
+        self.assertEqual(self.calls, [])
+
+    def test_using_an_existing_folder_needs_no_write_access(self):
+        os.mkdir(f"{self.disk}/theirs")
+        self.user("bob")["uid"] = ME
+        self.do("home", name="bob", path=f"{self.disk}/theirs", confirm="bob")                  # only passwd changes
+        self.assertEqual(self.argv(), [["usermod", "-d", f"{self.disk}/theirs", "--", "bob"]])
+
+    def test_renaming_the_home_on_a_read_only_disk(self):
+        self.user("bob")["home"] = f"{self.disk}/bob"
+        os.mkdir(f"{self.disk}/bob")
+        self.assert_refused_cleanly(self.refused("rename", 409, name="bob", new_name="robert", confirm="bob", rename_home=True))
+
+    def test_renaming_without_the_home_is_not_affected(self):
+        self.user("bob")["home"] = f"{self.disk}/bob"
+        self.do("rename", name="bob", new_name="robert", confirm="bob")
+        self.assertEqual(self.argv()[0], ["usermod", "-l", "robert", "--", "bob"])
+
+    def test_deleting_a_home_on_a_read_only_disk(self):
+        self.user("bob")["home"] = f"{self.disk}/bob"
+        os.mkdir(f"{self.disk}/bob")
+        self.assert_refused_cleanly(self.refused("remove", 409, name="bob", confirm="bob", delete_home=True))
+        self.do("remove", name="bob", confirm="bob")                                              # keeping the home is fine
+        self.assertEqual(self.argv(), [["userdel", "--", "bob"]])
+
+
+class FailureSettleTest(Case):
+    """A command that fails half way must not leave an account pointing at nothing, or half created."""
+
+    def setUp(self):
+        super().setUp()
+        self.old = str(self.root / "homes" / "bob")
+        self.new = str(self.root / "homes" / "newplace")
+        self.user("bob").update(uid=ME, gid=MY_GID, home=self.old)
+        os.mkdir(self.old)
+
+    def passwd_changes_then_fails(self, home=None, message="usermod: exit 12: cannot move"):
+        def effect(args):
+            self.user("bob")["home"] = home or self.new
+        self.effects = [(["usermod", "-d"], effect)]
+        self.broken = [(["usermod", "-d", self.new], message)]
+
+    def move(self):
+        return self.refused("home", 502, name="bob", path=self.new, confirm="bob", move=True)
+
+    def test_the_account_is_put_back_when_the_folder_was_not_moved(self):
+        self.passwd_changes_then_fails()
+        message = self.move()
+        self.assertIn("cannot move", message)
+        self.assertIn("nothing was moved and the account was put back to " + self.old, message)
+        self.assertEqual(self.argv()[-1], ["usermod", "-d", self.old, "--", "bob"])
+
+    def test_if_putting_it_back_fails_the_message_gives_the_command_to_run(self):
+        self.passwd_changes_then_fails()
+        self.broken.append((["usermod", "-d", self.old], "usermod: exit 1: locked"))
+        message = self.move()
+        self.assertIn(f"run `usermod -d {self.old} bob` as root", message)
+        self.assertIn("which does not exist", message)
+
+    def test_a_partly_done_move_is_not_undone(self):
+        self.passwd_changes_then_fails()
+        self.effects.append((["usermod", "-d"], lambda args: os.mkdir(self.new)))              # the copy happened, the removal of the old one did not
+        message = self.move()
+        self.assertIn(f"the account now uses {self.new}", message)
+        self.assertIn("is still there as well", message)
+        self.assertEqual(len(self.calls), 1)                         # nothing was "put back"
+
+    def test_when_neither_folder_exists_it_says_so_and_touches_nothing(self):
+        self.passwd_changes_then_fails()
+        self.effects.append((["usermod", "-d"], lambda args: os.rmdir(self.old)))              # the files vanished while it worked
+        message = self.move()
+        self.assertIn("neither", message)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_when_the_account_was_not_changed_it_says_so(self):
+        self.broken = [(["usermod", "-d", self.new], "usermod: exit 12: cannot move")]
+        self.assertIn("nothing was changed", self.move())
+
+    def test_when_the_account_cannot_be_read_afterwards(self):
+        def effect(args):
+            self.data = {"error": "OSError: gone"}
+        self.effects = [(["usermod", "-d"], effect)]
+        self.broken = [(["usermod", "-d", self.new], "usermod: exit 12: x")]
+        self.assertIn("could not be read afterwards", self.move())
+
+    def test_when_the_home_is_something_else_entirely(self):
+        self.passwd_changes_then_fails(home="/somewhere/else")
+        self.assertIn("neither", self.move())
+        self.assertEqual(len(self.calls), 1)
+
+    def test_a_folder_created_for_a_failing_change_is_removed_and_the_state_checked(self):
+        self.broken = [(["usermod", "-d"], "usermod: exit 1: nope")]
+        message = self.refused("home", 502, name="bob", path=self.new, confirm="bob")
+        self.assertFalse(os.path.exists(self.new))
+        self.assertIn("nothing was changed", message)
+
+    def test_a_useradd_that_fails_after_creating_the_account_is_undone(self):
+        home = str(self.root / "homes" / "dave")
+
+        def created(args):
+            self.data["users"].append(acct("dave", 1500, home=home))
+            os.mkdir(home)
+        self.effects = [(["useradd"], created)]
+        self.broken = [(["useradd"], "useradd: exit 12: cannot create directory")]
+        message = self.refused("add", 502, name="dave", shell="/bin/bash", home=home)
+        self.assertIn("cannot create directory", message)
+        self.assertIn("half-created account was removed again", message)
+        self.assertIn(f"The folder {home} was created and left in place", message)
+        self.assertEqual(self.argv()[-1], ["userdel", "--", "dave"])                              # never "-r": nothing is deleted from disk
+
+    def test_if_the_half_created_account_cannot_be_removed_the_message_is_loud(self):
+        home = str(self.root / "homes" / "dave")
+        self.effects = [(["useradd"], lambda args: self.data["users"].append(acct("dave", 1500, home=home)))]
+        self.broken = [(["useradd"], "useradd: exit 12: x"), (["userdel"], "userdel: exit 1: busy")]
+        message = self.refused("add", 502, name="dave", shell="/bin/bash", home=home)
+        self.assertIn("half created and removing it failed too", message)
+        self.assertIn("userdel dave", message)
+
+    def test_a_useradd_that_fails_before_creating_anything_is_just_an_error(self):
+        self.broken = [(["useradd"], "useradd: exit 9: nope")]
+        message = self.refused("add", 502, name="dave", shell="/bin/bash", home=str(self.root / "homes" / "dave"))
+        self.assertNotIn("half", message)
+        self.assertEqual([a[0] for a in self.argv()], ["useradd"])
+
+    def test_a_userdel_that_removed_the_account_but_not_the_home_says_so(self):
+        self.effects = [(["userdel"], lambda args: self.data["users"].remove(self.user("bob")))]
+        self.broken = [(["userdel"], "userdel: exit 12: cannot remove home")]
+        self.admin.ledger.put("bob", 3, "x")
+        message = self.refused("remove", 502, name="bob", confirm="bob", delete_home=True)
+        self.assertIn("the account is gone, but its home folder " + self.old + " was not deleted", message)
+        self.assertIsNone(self.admin.ledger.get("bob"))
+
+    def test_a_userdel_that_changed_nothing_says_the_account_is_still_there(self):
+        self.broken = [(["userdel"], "userdel: exit 8: logged in")]
+        self.admin.ledger.put("bob", 3, "x")
+        self.assertIn("the account is still there", self.refused("remove", 502, name="bob", confirm="bob"))
+        self.assertIsNotNone(self.admin.ledger.get("bob"))
+
+
+class MountTableTest(unittest.TestCase):
+    TABLE = (
+        "22 1 8:0 / / rw,relatime shared:1 - ext4 /dev/sda rw\n"
+        "30 22 8:1 / /boot rw,relatime shared:2 - ext4 /dev/sda1 rw\n"
+        "40 22 8:32 / /mnt/Extra20 ro,nosuid shared:3 - ext4 /dev/sdc rw\n"
+        "41 40 8:32 /admin/data /mnt/Extra20/admin/data rw shared:4 - ext4 /dev/sdc rw\n"
+        "42 22 8:0 /home /home rw shared:5 - ext4 /dev/sda rw\n"
+        "43 22 8:0 /etc /etc rw shared:6 - ext4 /dev/sda rw\n"
+        "50 22 0:25 / /run rw - tmpfs tmpfs rw\n"
+        "51 22 0:5 / /proc rw - proc proc rw\n"
+        "52 22 8:48 / /mnt/with\\040space rw - xfs /dev/sdd rw\n"
+        "garbage line\n"
+    )
+
+    def test_parsing(self):
+        mounts = users_mod.parse_mountinfo(self.TABLE)
+        self.assertEqual(len(mounts), 9)
+        by = {m["target"]: m for m in mounts}
+        self.assertEqual((by["/mnt/Extra20"]["root"], by["/mnt/Extra20"]["fstype"], by["/mnt/Extra20"]["source"]), ("/", "ext4", "/dev/sdc"))
+        self.assertEqual(by["/home"]["root"], "/home")                                              # a bind mount of a sub-folder
+        self.assertIn("/mnt/with space", by)                                                        # \040 is a space
+        self.assertEqual(users_mod.parse_mountinfo("nothing here\n\n"), [])
+
+    def test_folder_names(self):
+        for good in ("a", "datatest", "my folder", "x" * 64, "ünï"):
+            self.assertIsNone(users_mod.folder_name_problem(good), good)
+        for bad in ("", ".", "..", "a/b", "/a", "a\nb", "a\x00b", " lead", "trail ", "x" * 65, None, 5, ["a"]):
+            self.assertIsNotNone(users_mod.folder_name_problem(bad), repr(bad))
+
+
+class BrowseTest(Case):
+    def setUp(self):
+        super().setUp()
+        r = self.root
+        self.disk = r / "disk"
+        for name in ("projects", "Music", "alice", "bob", ".hidden", "dashboard", "zeta"):
+            (self.disk / name).mkdir(parents=True)
+        (self.disk / "afile").write_text("x")
+        (self.disk / "sub").mkdir()                                  # exists, and the mount table has it as a bind mount of a sub-folder
+        os.symlink(self.disk / "projects", self.disk / "linkdir")
+        os.symlink(self.disk / "afile", self.disk / "linkfile")
+        (r / "dashboard").mkdir()
+        (self.disk / "projects" / "inner").mkdir()
+        self.data["users"].append(acct("alice", 1000, home=str(self.disk / "alice")))
+        self.user("bob")["home"] = str(self.disk / "bob")
+        self.user("alice")["home"] = str(self.disk / "alice")
+        (r / "mountinfo").write_text(
+            f"22 1 8:0 / / rw - ext4 /dev/sda rw\n30 22 8:1 / /boot rw - ext4 /dev/sda1 rw\n40 22 8:32 / {self.disk} rw - ext4 /dev/sdc rw\n"
+            f"41 40 8:32 /sub {self.disk}/sub rw - ext4 /dev/sdc rw\n42 22 8:0 /home /home rw - ext4 /dev/sda rw\n43 22 0:25 / /run rw - tmpfs tmpfs rw\n")
+        self.admin.forbidden = ("/etc", "/usr", "/root", "/boot", "/var")
+        self.admin.protect = (str(r / "dashboard"),)
+
+    def names(self, listing, key="name"):
+        return [f[key] for f in listing["folders"]]
+
+    def test_places_are_home_and_real_disks_only(self):
+        places = self.admin.places()
+        self.assertEqual([p["path"] for p in places][:1], ["/home"])
+        self.assertEqual([p["path"] for p in places if p["path"] != "/home"], [str(self.disk)])      # not /, /boot, binds, tmpfs
+        place = next(p for p in places if p["path"] == str(self.disk))
+        self.assertEqual((place["device"], place["writable"]), ("/dev/sdc", True))
+        self.assertTrue(place["free"] > 0 and place["total"] >= place["free"])
+        self.unwritable = [str(self.disk)]
+        self.assertFalse(next(p for p in self.admin.places() if p["path"] == str(self.disk))["writable"])
+
+    def test_a_missing_mount_table_still_gives_home(self):
+        (self.root / "mountinfo").unlink()
+        self.assertEqual([p["path"] for p in self.admin.places()], ["/home"])
+
+    def test_the_listing_has_folders_only_sorted_without_hidden_ones(self):
+        listing = self.admin.browse(str(self.disk))
+        self.assertEqual(self.names(listing), ["alice", "bob", "dashboard", "linkdir", "Music", "projects", "sub", "zeta"])
+        self.assertEqual((listing["path"], listing["parent"], listing["truncated"], listing["writable"]), (str(self.disk), str(self.root), False, True))
+        self.assertEqual(self.names(self.admin.browse(str(self.disk), hidden=True))[0], ".hidden")
+
+    def test_what_can_be_entered_and_what_can_be_chosen(self):
+        by = {f["name"]: f for f in self.admin.browse(str(self.disk))["folders"]}
+        self.assertEqual((by["projects"]["enterable"], by["projects"]["selectable"], by["projects"]["reason"]), (True, True, ""))
+        self.assertEqual((by["alice"]["enterable"], by["alice"]["selectable"], by["alice"]["reason"]), (False, False, "the home folder of alice"))
+        self.assertEqual((by["bob"]["enterable"], by["bob"]["reason"]), (False, "the home folder of bob"))
+        self.assertEqual((by["linkdir"]["kind"], by["linkdir"]["enterable"], by["linkdir"]["selectable"], by["linkdir"]["reason"]), ("link", False, False, "a symbolic link"))
+        self.assertEqual((by["dashboard"]["enterable"], by["dashboard"]["selectable"]), (True, True))      # only the configured folder is the dashboard's
+
+    def test_the_current_folder_says_whether_it_can_be_chosen(self):
+        top = self.admin.browse(str(self.disk))
+        self.assertFalse(top["selectable"])                                          # it contains alice's and bob's homes
+        self.assertIn("overlaps the home folder", top["reason"])
+        inner = self.admin.browse(str(self.disk / "projects"))
+        self.assertEqual((inner["selectable"], inner["parent"]), (True, str(self.disk)))
+        self.assertEqual(self.names(inner), ["inner"])
+
+    def test_system_folders_and_other_peoples_homes_cannot_be_opened(self):
+        for path, why in (("/etc", "system folder"), ("/usr", "system folder"), (str(self.root / "dashboard"), "dashboard"), (str(self.disk / "alice"), "home folder of alice")):
+            self.assertIn(why, self.refused_browse(403, path))
+        self.admin.browse(str(self.disk / "alice"), own="alice")                                  # its own owner may look at it
+
+    def refused_browse(self, status, *args, **kw):
+        with self.assertRaises(ActionError) as raised:
+            self.admin.browse(*args, **kw)
+        self.assertEqual(raised.exception.status, status, raised.exception.message)
+        return raised.exception.message
+
+    def test_bad_paths(self):
+        for path in ("relative", "/a/../b", "/a//b", "/trailing/", "a\x00b", "x" * 400, 5, ["/x"]):
+            self.refused_browse(400, path)
+        self.refused_browse(404, str(self.root / "missing"))
+        self.refused_browse(404, str(self.disk / "afile"))
+        self.assertIn("symbolic link", self.refused_browse(400, str(self.disk / "linkdir")))
+
+    def test_an_unreadable_folder_is_a_403_not_a_crash(self):
+        locked = self.disk / "projects" / "inner"
+        os.chmod(locked, 0)
+        self.addCleanup(os.chmod, locked, 0o700)
+        if os.access(locked, os.R_OK):
+            self.skipTest("running as root")
+        self.assertIn("cannot be read", self.refused_browse(403, str(locked)))
+
+    def test_without_a_path_it_starts_at_the_first_place(self):
+        self.admin.places = lambda: [{"path": str(self.disk)}]
+        self.assertEqual(self.admin.browse()["path"], str(self.disk))
+        self.assertEqual(self.admin.browse("")["path"], str(self.disk))
+
+    def test_the_root_lists_system_folders_greyed_out(self):
+        by = {f["name"]: f for f in self.admin.browse("/")["folders"]}
+        self.assertEqual(self.admin.browse("/")["parent"], None)
+        for system in ("etc", "usr"):
+            self.assertEqual((by[system]["enterable"], by[system]["selectable"], by[system]["reason"]), (False, False, f"/{system} is a system folder"))
+        self.assertFalse(self.admin.browse("/")["selectable"])                                      # "/" itself is not a home
+
+    def test_a_new_folder_name_is_checked_in_place(self):
+        listing = self.admin.browse(str(self.disk), name="newone")
+        self.assertEqual(listing["choice"], {"path": str(self.disk / "newone"), "ok": True, "reason": "", "exists": False})
+        self.assertEqual(self.admin.browse(str(self.disk), name="projects")["choice"]["exists"], True)
+        for bad in ("a/b", "..", "", "x" * 65):
+            choice = self.admin.browse(str(self.disk), name=bad)["choice"]
+            self.assertEqual((choice["ok"], choice["path"]), (False, None), bad)
+        self.assertNotIn("choice", self.admin.browse(str(self.disk)))
+        self.assertFalse(self.admin.browse(str(self.disk), name="alice")["choice"]["ok"])           # somebody's home
+
+    def test_long_listings_are_cut_and_say_so(self):
+        for i in range(8):
+            (self.disk / f"many{i}").mkdir()
+        import dashboard.useradmin as module
+        original = module.MAX_BROWSE
+        module.MAX_BROWSE = 5
+        self.addCleanup(setattr, module, "MAX_BROWSE", original)
+        listing = self.admin.browse(str(self.disk))
+        self.assertEqual((len(listing["folders"]), listing["truncated"]), (5, True))
+
+    def test_a_listing_never_follows_a_link_to_a_file_or_leaks_files(self):
+        names = self.names(self.admin.browse(str(self.disk)))
+        self.assertNotIn("afile", names)
+        self.assertNotIn("linkfile", names)
+
 
 if __name__ == "__main__":
     unittest.main()

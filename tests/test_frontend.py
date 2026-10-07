@@ -32,6 +32,10 @@ class FrontendTest(unittest.TestCase):
         run = subprocess.run(["node", str(ROOT / "tests/js/forms_smoke.mjs")], capture_output=True, text=True, timeout=30)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_the_folder_picker_navigates_explains_and_only_returns_allowed_choices(self):
+        run = subprocess.run(["node", str(ROOT / "tests/js/folderpicker_smoke.mjs")], capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_every_script_parses(self):
         for path in sorted((ROOT / "static").rglob("*.js")):
             run = subprocess.run(["node", "--input-type=module", "--check"], input=path.read_text(), capture_output=True, text=True, timeout=30)

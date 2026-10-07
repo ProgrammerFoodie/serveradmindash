@@ -21,11 +21,13 @@ MemoryMax=192M
 OOMPolicy=continue
 NoNewPrivileges=yes
 PrivateTmp=yes
-# The admin tools (users, SSH keys, config editor) have to edit /etc, home folders, crontabs and mail spools,
-# so the sandbox is opened exactly that far. /usr, /boot and the rest of /var stay read-only.
+# The admin tools (users, SSH keys, config editor) have to edit /etc, home folders, crontabs and mail spools, so the sandbox is
+# opened exactly that far: /usr, /boot and the rest of /var stay read-only. /mnt/Extra20 is the data disk (where this program lives
+# and where homes may be): without it in this list the disk is read-only to the service and `usermod -m` cannot move a home there.
+# To allow homes on another disk, add its mount point here (or in a drop-in) and restart the service.
 ProtectHome=no
 ProtectSystem=strict
-ReadWritePaths=/mnt/Extra20/admin/data /etc /home /root -/var/spool/cron -/var/mail
+ReadWritePaths=/mnt/Extra20 /etc /home /root -/var/spool/cron -/var/mail
 
 [Install]
 WantedBy=multi-user.target

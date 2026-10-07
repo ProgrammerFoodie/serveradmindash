@@ -29,7 +29,7 @@ class ServiceUnitTest(unittest.TestCase):
         s = self.settings()
         self.assertEqual((s["ProtectSystem"], s["ProtectHome"], s["NoNewPrivileges"], s["PrivateTmp"]), ("strict", "no", "yes", "yes"))
         writable = sorted(p.lstrip("-") for p in s["ReadWritePaths"].split())
-        self.assertEqual(writable, ["/etc", "/home", "/mnt/Extra20/admin/data", "/root", "/var/mail", "/var/spool/cron"])
+        self.assertEqual(writable, ["/etc", "/home", "/mnt/Extra20", "/root", "/var/mail", "/var/spool/cron"])
 
     def test_paths_that_may_not_exist_are_optional(self):
         # without the "-" prefix systemd refuses to start the service on a machine that has no /var/mail

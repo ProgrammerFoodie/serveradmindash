@@ -8,6 +8,7 @@ import { el } from "./util.js";
 /**
  * fields: [{ name, label, type: "text"|"password"|"checkbox"|"select", value, placeholder, options: [{value, label}],
  *            required, minLength, maxLength, pattern, patternMessage, matches, help, autocomplete }]
+ * A "folder" field is a text box with a Browse… button that calls `browse(fieldName, currentValues)`; whatever path it resolves with is put in the box.
  * `matches` names another field that must hold the same text (the repeat-the-password field).
  * Returns the first problem as a sentence, or null.
  */
@@ -27,10 +28,11 @@ export function formProblem(fields, values) {
 }
 
 /** Show the form in `dialog`. Resolves with {name: value} when sent, or null when cancelled. */
-export function askForm(dialog, { title, lines = [], warning = [], fields, submitLabel = "Save", danger = false, typed = null }) {
+export function askForm(dialog, { title, lines = [], warning = [], fields, submitLabel = "Save", danger = false, typed = null, browse = null }) {
   return new Promise((resolve) => {
     dialog.returnValue = "";
     const inputs = new Map();
+    const kind = Object.fromEntries(fields.map((f) => [f.name, f.type]));
     const rows = fields.map((f) => {
       let input;
       if (f.type === "select") {
@@ -39,12 +41,21 @@ export function askForm(dialog, { title, lines = [], warning = [], fields, submi
       } else if (f.type === "checkbox") {
         input = el("input", { type: "checkbox", name: f.name });
         input.checked = !!f.value;
+      } else if (f.type === "folder") {
+        input = el("input", { type: "text", name: f.name, value: f.value ?? "", placeholder: f.placeholder || "", autocomplete: "off", autocapitalize: "none", spellcheck: "false", "aria-label": f.label });
       } else {
         input = el("input", { type: f.type === "password" ? "password" : "text", name: f.name, value: f.value ?? "", placeholder: f.placeholder || "",
           autocomplete: f.autocomplete || (f.type === "password" ? "new-password" : "off"), autocapitalize: "none", spellcheck: "false", "aria-label": f.label });
       }
       inputs.set(f.name, input);
       const help = f.help ? el("small", { class: "form-help" }, f.help) : null;
+      if (f.type === "folder") {
+        const pick = el("button", { class: "btn", type: "button", disabled: !browse, onclick: async () => {
+          const chosen = await browse(f.name, read());
+          if (chosen) input.value = chosen;
+        } }, "Browse…");
+        return el("div", { class: "form-row" }, el("span", null, f.label), el("div", { class: "folder-field" }, input, pick), help);
+      }
       return f.type === "checkbox"
         ? el("label", { class: "form-check" }, input, el("span", null, f.label), help)
         : el("label", { class: "form-row" }, el("span", null, f.label), input, help);
@@ -55,7 +66,6 @@ export function askForm(dialog, { title, lines = [], warning = [], fields, submi
     const error = el("p", { class: "form-error", role: "alert", hidden: true });
     if (typedInput) typedInput.addEventListener("input", () => { send.disabled = !typedMatches(typedInput.value, typed); });
 
-    const kind = Object.fromEntries(fields.map((f) => [f.name, f.type]));
     const read = () => Object.fromEntries([...inputs].map(([name, input]) => [name, kind[name] === "checkbox" ? !!input.checked : input.value]));
     let result = null;
     const form = el("form", { class: "form-dialog", method: "dialog", novalidate: true,

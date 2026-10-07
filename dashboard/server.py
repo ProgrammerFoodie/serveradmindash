@@ -447,6 +447,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise HttpError(404, "not found")
             return self._json(200, app.power.describe())
 
+        if path == "/api/folders":
+            app.require_feature("users")
+            if not app.useradmin:
+                raise HttpError(404, "not found")
+            try:
+                return self._json(200, app.useradmin.browse(one("path") or None, one("hidden") == "1", one("for") or None,
+                                                            one("name") if "name" in qs else None))
+            except ActionError as e:
+                raise HttpError(e.status, e.message) from None
+
         if path.startswith("/api/jobs/"):
             job_id = path[len("/api/jobs/"):]
             job = app.actions.jobs.get(job_id) if app.actions and re.fullmatch(r"[0-9a-f]{16}", job_id) else None

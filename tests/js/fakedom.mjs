@@ -23,9 +23,15 @@ export class FakeNode {
     return e;
   }
   click() { (this.listeners.click || []).forEach((fn) => fn({ target: this })); }
+  /** Like the browser: strings become text, but null/undefined would print as the words "null"/"undefined", which is always a bug here. */
+  coerce(kid) {
+    if (kid === null || kid === undefined || kid === false) throw new Error(`${kid} passed to a DOM method: the browser would show it as text`);
+    if (typeof kid === "string") { const n = new FakeNode("#text"); n.text = kid; return n; }
+    return kid;
+  }
   detach(node) { if (node.parent) node.parent.children = node.parent.children.filter((c) => c !== node); node.parent = this; }
-  append(...kids) { kids.forEach((k) => this.detach(k)); this.children.push(...kids); }      // like the real DOM, adding a node moves it
-  replaceChildren(...kids) { kids.forEach((k) => this.detach(k)); this.children = kids; }
+  append(...kids) { kids = kids.map((k) => this.coerce(k)); kids.forEach((k) => this.detach(k)); this.children.push(...kids); }      // like the real DOM, adding a node moves it
+  replaceChildren(...kids) { kids = kids.map((k) => this.coerce(k)); kids.forEach((k) => this.detach(k)); this.children = kids; }
   insertBefore(node, ref) { this.detach(node); const i = this.children.indexOf(ref); this.children.splice(i < 0 ? this.children.length : i, 0, node); }
   get parentNode() { return this.parent ?? null; }
   get firstChild() { return this.children[0] ?? null; }
