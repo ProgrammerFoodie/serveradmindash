@@ -2,6 +2,7 @@
 
 import { api, AuthError } from "./api.js";
 import { askConfirm } from "./confirm.js";
+import { askForm } from "./formdialog.js";
 import { watchIdle } from "./idle.js";
 import { append, clear, el, fmtAgo, fmtCountdown, fmtDuration, store } from "./util.js";
 import overview from "./tabs/overview.js";
@@ -74,6 +75,8 @@ ctx.toast = (text, kind = "ok", sticky = false) => {
 ctx.confirm = (options) => askConfirm(confirmDialog, options);
 /** The same for dangerous things: the confirm button stays disabled until `word` has been typed. */
 ctx.confirmTyped = ({ word, ...options }) => askConfirm(confirmDialog, { ...options, typed: word });
+/** A small form (see formdialog.js). Resolves with the values, or null if cancelled. */
+ctx.askForm = (options) => askForm(confirmDialog, options);
 
 /** Perform an action on the server, tell the person what happened, refresh the page data. Returns the result or null. */
 ctx.actionSeq = 0;

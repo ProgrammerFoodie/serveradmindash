@@ -470,6 +470,108 @@ class ActionApiTest(ServerTest):
         self.assertEqual(self.req("GET", "/api/audit?limit=99999", token=token)[2]["entries"][0]["limit"], 200)
 
 
+class UserActionsApiTest(ServerTest):
+    """The account actions through the real server, with the real Actions and UserAdmin over a fake system."""
+
+    def setUp(self):
+        from dashboard.actions import Actions
+        from dashboard.audit import Audit
+        from dashboard.useradmin import UserAdmin
+
+        super().setUp()
+        self.ran = []
+        self.data = {"users": [
+            {"name": "root", "uid": 0, "gid": 0, "type": "root", "sudo": "full", "home": "/root", "password": "set", "expired": False, "expires": None,
+             "processes": 1, "can_login": True},
+            {"name": "alice", "uid": 1000, "gid": 1000, "type": "login", "sudo": "full", "home": "/home/alice", "password": "set", "expired": False,
+             "expires": None, "processes": 0, "can_login": True},
+            {"name": "bob", "uid": 1001, "gid": 1001, "type": "login", "sudo": None, "home": "/home/bob", "password": "set", "expired": False,
+             "expires": None, "processes": 0, "can_login": True}],
+            "sessions": [{"id": "5", "user": "bob"}], "sudo_source": "sudoers", "shells": ["/bin/bash"]}
+
+        class Sched:
+            def refresh(inner, name):
+                return self.data
+
+        def runner(args, timeout=5.0, ok_codes=(0,), stdin=None, secret=None):
+            self.ran.append((args, stdin))
+            return ""
+
+        cfg = self.app.cfg
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.audit = Audit(os.path.join(self.work.name, "audit.jsonl"))
+        self.app.actions = Actions(cfg, Sched(), None, self.audit, runner=runner)
+        self.app.useradmin = UserAdmin(cfg, self.app.actions, Sched(), None, self.audit, self.sessions, self.work.name, runner=runner)
+        self.app.useradmin.register()
+
+    OPS = ("add", "password", "lock", "unlock", "ban", "unban", "rename", "home", "remove", "end-session", "end-dashboard")
+
+    def test_everything_needs_a_session_and_the_csrf_token(self):
+        for op in self.OPS:
+            self.assertEqual(self.req("POST", f"/api/users/{op}", {"name": "bob"}, csrf="x")[0], 401, op)
+        token, csrf = self.signed_in()
+        for op in self.OPS:
+            self.assertEqual(self.req("POST", f"/api/users/{op}", {"name": "bob"}, token=token)[0], 403, op)
+            self.assertEqual(self.req("POST", f"/api/users/{op}", {"name": "bob"}, token=token, csrf="wrong")[0], 403, op)
+        self.assertEqual(self.ran, [])
+
+    def test_a_switched_off_tool_does_not_exist(self):
+        token, csrf = self.signed_in()
+        self.app.admin = dict(self.app.admin, users=False)
+        for op in self.OPS:
+            self.assertEqual(self.req("POST", f"/api/users/{op}", {"name": "bob"}, token=token, csrf=csrf)[0], 404, op)
+        self.assertEqual(self.ran, [])
+
+    def test_unknown_operations_are_404_and_get_is_not_an_action(self):
+        token, csrf = self.signed_in()
+        for op in ("nothing", "", "../x", "LOCK", "lock/extra"):
+            self.assertEqual(self.req("POST", f"/api/users/{op}", {}, token=token, csrf=csrf)[0], 404, op)
+        self.assertNotEqual(self.req("GET", "/api/users/lock", token=token)[0], 200)
+
+    def test_a_lock_goes_through_and_a_refusal_comes_back_with_its_reason(self):
+        token, csrf = self.signed_in()
+        status, _, body = self.req("POST", "/api/users/lock", {"name": "bob"}, token=token, csrf=csrf)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.ran, [(["usermod", "-L", "-e", "1", "--", "bob"], None)])
+        status, _, body = self.req("POST", "/api/users/lock", {"name": "root"}, token=token, csrf=csrf)
+        self.assertEqual((status, "never changed" in body["error"]), (403, True))
+        status, _, body = self.req("POST", "/api/users/lock", {"name": "alice"}, token=token, csrf=csrf)    # the only other admin is root, who does not count
+        self.assertEqual((status, "last user with full sudo" in body["error"]), (403, True))
+        self.assertEqual(len(self.ran), 1)
+
+    def test_a_password_travels_only_in_the_request_and_on_stdin(self):
+        token, csrf = self.signed_in()
+        secret = "an-entirely-new-password-123"
+        status, response, body = self.req("POST", "/api/users/password", {"name": "bob", "password": secret}, token=token, csrf=csrf)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.ran, [(["chpasswd"], f"bob:{secret}\n")])
+        self.assertNotIn(secret, json.dumps(body))
+        self.assertNotIn(secret, json.dumps(self.audit.tail(10)))
+
+    def test_the_server_not_the_page_decides_which_sign_in_is_yours(self):
+        token_a, csrf_a = self.signed_in()
+        status, response, _ = self.login(ip="10.0.0.9")
+        self.assertEqual(status, 200)
+        token_b = response.getheader("Set-Cookie").split(";")[0].split("=", 1)[1]
+        mine = self.sessions.id_of(token_a)
+        theirs = self.sessions.id_of(token_b)
+        status, _, body = self.req("POST", "/api/users/end-dashboard", {"id": mine, "current_id": "000000000000"}, token=token_a, csrf=csrf_a)
+        self.assertEqual((status, "this browser" in body["error"]), (400, True))
+        self.assertEqual(self.req("GET", "/api/session", token=token_a)[0], 200)
+        status, _, _ = self.req("POST", "/api/users/end-dashboard", {"id": theirs, "current_id": theirs}, token=token_a, csrf=csrf_a)
+        self.assertEqual(status, 200)                                                    # a forged current_id does not protect anyone else
+        self.assertEqual(self.req("GET", "/api/session", token=token_b)[0], 401)
+
+    def test_ending_a_system_session_and_the_audit_trail(self):
+        token, csrf = self.signed_in()
+        self.assertEqual(self.req("POST", "/api/users/end-session", {"id": "5"}, token=token, csrf=csrf)[0], 200)
+        self.assertEqual(self.ran[-1][0], ["loginctl", "terminate-session", "--", "5"])
+        self.assertEqual(self.req("POST", "/api/users/end-session", {"id": "99"}, token=token, csrf=csrf)[0], 404)
+        actions = [(e["action"], e["ok"]) for e in self.audit.tail(10)]
+        self.assertEqual(actions, [("users.end_session", False), ("users.end_session", True)])
+
+
 class UsersTabTest(ServerTest):
     def setUp(self):
         super().setUp()

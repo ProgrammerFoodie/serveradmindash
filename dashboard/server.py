@@ -23,6 +23,7 @@ from .alerts import evaluate
 from .auth import (MAX_PASSWORD_LEN, SESSION_COOKIE, LoginLimiter, Sessions, hash_password, verify_password)
 from .collectors.logs import unit_logs
 from .config import ROOT
+from .useradmin import OPS as USER_OPS
 from .util import CommandError
 
 log = logging.getLogger("dashboard.http")
@@ -65,10 +66,10 @@ class HttpError(Exception):
 class App:
     """Everything a request handler needs."""
 
-    def __init__(self, cfg, scheduler, history, sessions: Sessions, limiter: LoginLimiter | None = None, alerts=None, actions=None, power=None):
+    def __init__(self, cfg, scheduler, history, sessions: Sessions, limiter: LoginLimiter | None = None, alerts=None, actions=None, power=None, useradmin=None):
         self.cfg, self.scheduler, self.history, self.sessions = cfg, scheduler, history, sessions
         self.admin = config.admin_switches(cfg)          # which admin tools are on; fixed for the life of the process
-        self.alerts, self.actions, self.power = alerts, actions, power
+        self.alerts, self.actions, self.power, self.useradmin = alerts, actions, power, useradmin
         self.limiter = limiter or LoginLimiter()
         host, _, port = cfg["listen"].rpartition(":")
         self.public_host = cfg["public_host"].lower()
@@ -246,6 +247,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._alert_unmute()
             if route == ("POST", "/api/telegram/test"):
                 return self._telegram_test()
+            if method == "POST" and path.startswith("/api/users/"):
+                return self._users_action(path[len("/api/users/"):].replace("-", "_"))
             if route == ("POST", "/api/power/reboot"):
                 return self._power("power.reboot")
             if route == ("POST", "/api/power/cancel"):
@@ -389,6 +392,23 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(404, "not found")
         try:
             result = app.actions.perform(kind, body, {"user": app.cfg["auth"]["username"], "ip": self.client_ip()})
+        except ActionError as e:
+            raise HttpError(e.status, e.message) from None
+        self._json(200, result)
+
+    def _users_action(self, op: str) -> None:
+        """Add, remove, lock, rename ... an account. The rules live in useradmin.py; this checks session, CSRF and switch."""
+        session = self._need_session(post=True)
+        self.app.require_feature("users")
+        if op not in USER_OPS:
+            raise HttpError(404, "not found")
+        body, app = self._read_json(), self.app
+        if not app.actions or not app.useradmin:
+            raise HttpError(404, "not found")
+        if op == "end_dashboard":
+            body["current_id"] = app.sessions.id_of(session["token"])        # decided here, never by the page
+        try:
+            result = app.actions.perform(f"users.{op}", body, {"user": app.cfg["auth"]["username"], "ip": self.client_ip()})
         except ActionError as e:
             raise HttpError(e.status, e.message) from None
         self._json(200, result)

@@ -51,6 +51,15 @@ def parse_group(text: str) -> dict[str, dict]:
     return groups
 
 
+def read_shells(path: str = "/etc/shells") -> list[str]:
+    """The login shells the system lists (what a new account may be given)."""
+    try:
+        lines = Path(path).read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+    return [line.strip() for line in lines if line.strip().startswith("/") and "\0" not in line]
+
+
 # ---- /etc/shadow --------------------------------------------------------------------------------------
 
 def password_state(field: str) -> str:
@@ -163,6 +172,12 @@ class Sudoers:
             if self._matches(token.lstrip("!"), name, uid, groups, gids, depth):
                 matched = not negated
         return matched
+
+    def mentions(self, name: str) -> list[str]:
+        """Where a user name is written out in a rule or alias (a rename would break these): ["sudoers.d/alice", ...]."""
+        found = [r["label"] for r in self.rules if any(t.lstrip("!") == name for t in r["users"])]
+        found += [f"{alias} (User_Alias)" for alias, members in self.aliases.items() if any(t.lstrip("!") == name for t in members)]
+        return list(dict.fromkeys(found))
 
     def for_user(self, name: str, uid: int, groups: set[str], gids: set[int]) -> list[dict]:
         return [r for r in self.rules if self._list_matches(r["users"], name, uid, groups, gids)]
@@ -279,9 +294,9 @@ class Users:
 
     def __init__(self, passwd="/etc/passwd", group="/etc/group", shadow="/etc/shadow", sudoers="/etc/sudoers",
                  sudoers_dir="/etc/sudoers.d", lastlog="/var/log/lastlog", login_defs="/etc/login.defs", proc="/proc",
-                 cgroup="/sys/fs/cgroup", runner=run, clock=time.time):
+                 cgroup="/sys/fs/cgroup", shells="/etc/shells", runner=run, clock=time.time):
         self.paths = {"passwd": passwd, "group": group, "shadow": shadow, "sudoers": sudoers, "sudoers_dir": sudoers_dir,
-                      "lastlog": lastlog, "login_defs": login_defs, "proc": proc, "cgroup": cgroup}
+                      "lastlog": lastlog, "login_defs": login_defs, "proc": proc, "cgroup": cgroup, "shells": shells}
         self._run, self._clock = runner, clock
 
     def _uid_range(self) -> tuple[int, int]:
@@ -320,6 +335,8 @@ class Users:
             sudo_source = "groups"
             out["notes"]["sudo"] = f"sudoers is not readable ({e.strerror}); sudo rights are guessed from the groups {', '.join(SUDO_GROUPS)}"
         out["sudo_source"] = sudo_source
+        out["shells"] = read_shells(self.paths["shells"])
+        out["has_sudo_group"] = "sudo" in groups
 
         lastlog_ok, newest_by_user = True, {}
         try:

@@ -143,7 +143,7 @@ dialog pre { margin: 0; padding: 12px 14px; overflow: auto; max-height: calc(100
 .btn.danger:hover { background: rgba(248,81,73,.12); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: #06101f; font-weight: 600; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
-dialog#confirm { width: min(440px, calc(100vw - 24px)); padding: 18px; }
+dialog#confirm { width: min(440px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto; padding: 18px; }
 dialog#confirm h2 { font-size: 16px; margin-bottom: 8px; }
 dialog#confirm p { margin: 6px 0; color: var(--dim); }
 dialog#confirm p.warn { color: var(--warn); }
@@ -209,3 +209,13 @@ body.dragging-cards { user-select: none; cursor: grabbing; }
 .subhead { margin: 10px 0 4px; font-size: 12px; font-weight: 500; color: var(--dim); }
 .subhead:first-child { margin-top: 0; }
 .kv dd { white-space: pre-line; }
+
+/* ---- forms in the dialog ---- */
+.form-dialog { display: grid; gap: 10px; }
+.form-row { display: grid; gap: 4px; color: var(--dim); font-size: 13px; }
+.form-row input, .form-row select { width: 100%; font: inherit; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.form-check { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--text); font-size: 13px; cursor: pointer; }
+.form-help { flex-basis: 100%; color: var(--faint); font-size: 12px; }
+.form-row .form-help { margin-top: 0; }
+.form-error { margin: 0; color: var(--crit); font-size: 13px; }
+dialog#confirm .form-dialog h2 { font-size: 16px; }

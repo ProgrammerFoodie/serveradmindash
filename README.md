@@ -52,6 +52,11 @@ sudo rights (and whether sudo needs a password), locked, expired or empty passwo
 processes. Click an account for everything about it. Password hashes are never sent to the page. Without root the dashboard still shows
 what it can and says what it could not read.
 
+The same tab manages accounts (all behind a confirmation, the dangerous ones behind typing the user name): add a user, change a password
+(root's too), lock and unlock, ban (lock and sign out now), rename, change the home folder, remove, and end a session or another browser's
+dashboard sign-in. Only login users can be locked, banned, renamed, moved or removed; the last user with full sudo rights who can log in is
+always protected; renaming or removing is refused while something still runs as the user or mentions the name, and the refusal says where.
+
 ## Locking it down
 
 The service runs as root, so whoever can write to this folder can run code as root at the next restart. After development is finished:

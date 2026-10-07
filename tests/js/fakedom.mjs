@@ -32,7 +32,7 @@ export class FakeNode {
   get isConnected() { return !this.detached; }          // a test sets `detached = true` to stand in for the page being left
   get disabled() { return "disabled" in this.attrs; }
   set disabled(v) { if (v) this.attrs.disabled = ""; else delete this.attrs.disabled; }
-  get value() { return this.attrs.value ?? this._value ?? ""; }
+  get value() { return this._value !== undefined ? this._value : (this.attrs.value ?? ""); }
   set value(v) { this._value = String(v); }
   get hidden() { return "hidden" in this.attrs; }
   set hidden(v) { if (v) this.attrs.hidden = ""; else delete this.attrs.hidden; }

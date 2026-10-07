@@ -3,7 +3,7 @@
 Adds to the dashboard: **reboot and "restart all services"**, **users and active sessions** with account management,
 **SSH keys** (view, add, remove, reveal private keys) and an **editable config viewer**. No web terminal: the dashboard stays terminal-less.
 
-Status: **phases 13, 14 and 15 done** (2026-10-07); phases 16-19 not started. Decisions below were made by the owner on 2026-10-07.
+Status: **phases 13 to 16 done** (2026-10-07); phases 17-19 not started. Decisions below were made by the owner on 2026-10-07.
 
 ### Phase 13: what was built, and how it differs from the text below
 - `config.json` `admin` block with the five switches (`dashboard/config.py`: `ADMIN_SWITCHES`, `admin_switches()`). Missing means off,
@@ -180,7 +180,36 @@ token hash, never the token), IP, browser, created, last activity, "this is you"
 UI: new **Users** tab: "Signed in now" (system sessions and dashboard sessions), "Users" table (login users and root;
 "show system accounts" toggle), and a per-user dialog with all details. Badges: sudo, locked, expired, no password, no keys.
 
-## Phase 16 - User actions
+## Phase 16 - User actions  (done)
+
+**As built, and where it differs from the text below:**
+- The rules are in `dashboard/useradmin.py` (named so to stay apart from the `users` collector); endpoint `POST /api/users/<op>` with
+  `op` = add, password, lock, unlock, ban, unban, rename, home, remove, end-session, end-dashboard (needs `admin.users`).
+  Page: `static/js/formdialog.js` (form dialog with validation and the typed word), `static/js/useractions.js` (which buttons, what each asks),
+  buttons in the Users tab (details dialog, "Add user", "End" on both session tables).
+- `util.run` gained `stdin` and `secret`: passwords reach `chpasswd` only on stdin, and every error message is scrubbed of the secret twice
+  (in `run` and again where the message is built). No password is ever in a label, audit entry or Telegram text.
+- Every action first re-reads the accounts from the system (`scheduler.refresh("users")`), never a minute-old copy.
+- **Last-admin guard:** lock, ban and remove are refused when the target has full sudo and no *other login user* (root does not count)
+  has full sudo and can still log in. If sudoers cannot be read, a sudo user is not locked on a guess. An already-locked account can still be banned.
+- **Lock remembers the old expiry date** in `data/locks.json` (`usermod -e 1` would overwrite it); Unlock puts it back (and says if it
+  has already passed). `-L`/`-U` only where a real hash is involved, so an account never ends up with an empty password.
+- **Dependents:** rename and remove look for running processes, systemd units (text of `/etc/systemd/system` incl. drop-ins, plus
+  `systemctl show` for the watched units), supervisor `user=`, sudoers rules and `User_Alias`, the crontab and sshd `AllowUsers`/`DenyUsers`/`Match User`.
+  Rename refuses on all of them; remove refuses on processes, units and supervisor and only *mentions* the rest ("Left behind"). A file that
+  exists but cannot be read counts as a blocker.
+- **Home folders:** absolute, plain path, at least two components, not under the system folders (except `/var/www`), not the dashboard's own
+  folder, nothing symbolic on the way, and no login user's home may contain or sit inside another's (so removing one can never delete another's files).
+  A system account's home (www-data's `/var/www`) may be lived beside, never shared exactly. The new folder for add and move must not exist yet.
+- Typed name required for: ban, rename, change home, remove (checked again on the server). Ban = lock + `loginctl terminate-user`.
+- Rename rolls the account name back if renaming its private group fails. A failed home move after a rename is reported as a partial success.
+- Ending a dashboard sign-in: the server decides which one is "this browser" (the page's claim is ignored), so you cannot sign yourself out here.
+- The optional first SSH key when adding a user is phase 17.
+- The collector now also reports `shells` and `has_sudo_group` for the add form.
+- Bugs found by the new tests on the way: Users tab lost its toolbar and table if the first poll came back empty (phase 15, fixed); a
+  form's "repeat the password" was not checked when left empty (fixed before release).
+
+**The original plan for this phase:**
 
 All in `dashboard/users.py`, through `Actions.perform` (lock, rate limit, audit, Telegram), argv lists only, `--` before
 every user name. Passwords go to `chpasswd` on **stdin only** (never argv, never logged), minimum 10 characters.

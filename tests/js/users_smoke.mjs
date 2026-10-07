@@ -31,12 +31,15 @@ const DASH = [
 const live = (data, extra = {}) => ({ sections: { users: data ? { t: 1, data } : null }, dashboard_sessions: DASH, ...extra });
 const full = { users: USERS, sessions: SESSIONS, notes: {}, sudo_source: "sudoers" };
 
-function make() {
-  const dialogs = [];
-  const ctx = { openDialog: (title, content) => dialogs.push([title, content]) };
+function make({ confirm = true } = {}) {
+  const dialogs = [], sent = [], asked = [], state = { closed: 0 };
+  const ctx = { openDialog: (title, content) => dialogs.push([title, content]), closeDialog: () => { state.closed++; },
+    confirm: async (o) => { asked.push(["confirm", o.title]); return confirm; }, confirmTyped: async (o) => { asked.push(["typed", o.title]); return confirm; },
+    askForm: async (o) => { asked.push(["form", o.title]); return null; }, act: async (path, body) => { sent.push([path, body]); return { ok: true }; } };
   const tab = users.create(ctx);
-  return { tab, dialogs };
+  return { tab, dialogs, sent, asked, state };
 }
+const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 const panels = (tab) => tab.el.children;                     // [signed in now, users]
 const rows = (panel) => panel.find((n) => n.tag === "tr" && n.hasClass("clickable"));
 const accountRows = (tab) => rows(panels(tab)[1]);
@@ -91,6 +94,54 @@ const input = (tab, type) => toolbar(tab).find((n) => n.tag === "input" && n.att
   check(!/\bundefined\b|\bnull\b/.test(text), "no 'undefined' or 'null' text");
 }
 
+// the buttons
+{
+  const { tab, dialogs, sent, asked, state } = make();
+  tab.update(live(full));
+  const label = (b) => b.textContent;
+  const buttonsOf = (content) => content.find((n) => n.tag === "button").map(label);
+  const byName = (n) => accountRows(tab).find((r) => r.children[0].textContent.startsWith(n));
+  byName("alice").click();
+  check(buttonsOf(dialogs[0][1]).join() === "Change password,Lock,Ban…,Rename…,Change home folder…,Remove…", `a login user's actions: ${buttonsOf(dialogs[0][1])}`);
+  byName("root").click();
+  check(buttonsOf(dialogs[1][1]).join() === "Change password", `root only gets a password: ${buttonsOf(dialogs[1][1])}`);
+  const toggle = input(tab, "checkbox");
+  toggle.checked = true; toggle.fire("change");
+  byName("daemon").click();
+  check(buttonsOf(dialogs[2][1]).length === 0, "a system account gets no buttons");
+  check(dialogs[2][1].find((n) => n.hasClass("actions")).length === 0, "and no empty button row");
+
+  const lock = dialogs[0][1].find((n) => n.tag === "button" && n.textContent === "Lock")[0];
+  lock.click(); await settle();
+  check(asked.length === 1 && asked[0][1] === "Lock alice?" && sent.length === 1 && sent[0][0] === "/api/users/lock", `Lock asks, then sends: ${JSON.stringify([asked, sent])}`);
+  check(state.closed === 1, "and closes the details, which are out of date now");
+  const rename = dialogs[0][1].find((n) => n.tag === "button" && n.textContent === "Rename…")[0];
+  rename.click(); await settle();
+  check(asked[1][0] === "form" && sent.length === 1 && state.closed === 1, "a cancelled form changes nothing and leaves the details open");
+}
+{
+  const { tab, dialogs, sent } = make({ confirm: false });
+  tab.update(live(full));
+  const alice = accountRows(tab).find((r) => r.children[0].textContent.startsWith("alice"));
+  alice.click();
+  dialogs[0][1].find((n) => n.tag === "button" && n.textContent === "Lock")[0].click(); await settle();
+  check(sent.length === 0, "declining sends nothing");
+}
+{
+  const { tab, asked } = make();
+  tab.update(live(null));
+  const add = panels(tab)[1].find((n) => n.tag === "button" && n.textContent === "Add user…")[0];
+  check(!!add && add.hasClass("primary"), "there is an Add user button");
+  add.click(); await settle();
+  check(asked.length === 0, "it does nothing before the first data has arrived (it needs the shell list)");
+}
+{
+  const { tab, asked } = make();
+  tab.update(live({ ...full, shells: ["/bin/bash"], has_sudo_group: true }));
+  panels(tab)[1].find((n) => n.tag === "button" && n.textContent === "Add user…")[0].click(); await settle();
+  check(asked.length === 1 && asked[0][0] === "form" && asked[0][1] === "Add a user", "Add user opens the form");
+}
+
 // the two session tables
 {
   const { tab } = make();
@@ -101,6 +152,9 @@ const input = (tab, type) => toolbar(tab).find((n) => n.tag === "input" && n.att
   check(text.includes("Chrome on macOS") && text.includes("Safari on iOS") && text.includes("you"), "dashboard sign-ins with browser names and 'you'");
   check(text.includes("100.1.1.1") && text.includes("100.2.2.2"), "and their addresses");
   check(tables.length === 2 && tables.every((t) => t.children.length === 2), `two rows in each table: ${tables.map((t) => t.children.length)}`);
+  const buttonTexts = (table) => table.find((n) => n.tag === "button").map((b) => b.textContent);
+  check(buttonTexts(tables[0]).join() === "End,End", `an End button per system session: ${buttonTexts(tables[0])}`);
+  check(buttonTexts(tables[1]).join() === "Sign out" && tables[1].textContent.includes("this browser"), `a Sign out button for the other browser only: ${buttonTexts(tables[1])}`);
 }
 
 // notes, missing and broken data
@@ -121,6 +175,8 @@ const input = (tab, type) => toolbar(tab).find((n) => n.tag === "input" && n.att
   check(panels(tab)[1].textContent.includes("Unavailable: boom"), "a collector error is shown");
   tab.update({ sections: { users: { t: 1, data: full } } });
   check(panels(tab)[0].textContent.includes("No dashboard sign-ins"), "no sign-in list at all is an empty list, not a crash");
+  check(accountRows(tab).length === 4 && !panels(tab)[1].textContent.includes("Unavailable") && !panels(tab)[1].textContent.includes("Waiting"), "and once data arrives the table is back and the message gone");
+  check(panels(tab)[1].find((n) => n.tag === "button" && n.textContent === "Add user…").length === 1, "the toolbar was never lost");
 }
 
 if (failed) { console.log(`${failed} check(s) failed`); process.exit(1); }

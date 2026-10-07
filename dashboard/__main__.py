@@ -120,6 +120,7 @@ def cmd_serve(args) -> int:
     from .audit import Audit
     from .history import History
     from .power import Power
+    from .useradmin import UserAdmin
     from .scheduler import Scheduler
     from .server import App, make_server
 
@@ -146,7 +147,11 @@ def cmd_serve(args) -> int:
     actions = Actions(cfg, scheduler, alerts, audit)
     power = Power(cfg, actions, scheduler, alerts, audit, config.DATA_DIR)
     power.register()
-    server = make_server(App(cfg, scheduler, history, sessions, alerts=alerts, actions=actions, power=power))
+    useradmin = None
+    if config.admin_switches(cfg)["users"]:                     # its collector exists only when the tool is on
+        useradmin = UserAdmin(cfg, actions, scheduler, alerts, audit, sessions, config.DATA_DIR)
+        useradmin.register()
+    server = make_server(App(cfg, scheduler, history, sessions, alerts=alerts, actions=actions, power=power, useradmin=useradmin))
 
     def shut_down(signum, _frame):
         log.info("signal %s: shutting down", signal.Signals(signum).name)

@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -132,6 +133,19 @@ class Sessions:
                 "WHERE fp = ? AND expires >= ? AND ? - last_seen < ? ORDER BY last_seen DESC", (self._fp, now, now, self.idle)).fetchall()
         return [{"id": h[:12], "created": created, "last_seen": last_seen, "expires": expires, "idle_left": self.idle - (now - last_seen),
                  "ip": ip or "", "ua": ua or "", "current": h == mine} for h, created, last_seen, expires, ip, ua in rows]
+
+    @staticmethod
+    def id_of(token: str) -> str:
+        """The id list_active() shows for this token's sign-in."""
+        return _token_hash(token)[:12]
+
+    def revoke_by_id(self, session_id: str) -> int:
+        """End the dashboard sign-in whose id (as shown by list_active) is `session_id`. Returns how many ended (0 or 1)."""
+        if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{12}", session_id):
+            return 0
+        with self._lock:
+            cursor = self._db.execute("DELETE FROM sessions WHERE substr(token_hash, 1, 12) = ?", (session_id,))
+            return cursor.rowcount
 
     def revoke(self, token: str) -> None:
         with self._lock:

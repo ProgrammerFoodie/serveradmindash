@@ -26,20 +26,25 @@ def read_int(path: str, default: int | None = None) -> int | None:
         return default
 
 
-def run(args: list[str], timeout: float = 5.0, ok_codes: tuple[int, ...] = (0,)) -> str:
+def run(args: list[str], timeout: float = 5.0, ok_codes: tuple[int, ...] = (0,), stdin: str | None = None, secret: str | None = None) -> str:
     """Run a command (never through a shell) and return stdout.
 
+    `stdin` is fed to the command's standard input (how passwords reach chpasswd: never on a command line, where
+    every user could read them). If `secret` is given, any trace of it is removed from an error message.
     Raises CommandError on a missing binary, timeout or an exit code not in ok_codes.
     """
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False, input=stdin)
     except FileNotFoundError:
         raise CommandError(f"{args[0]}: not installed") from None
     except subprocess.TimeoutExpired:
         raise CommandError(f"{args[0]}: timed out after {timeout}s") from None
     if proc.returncode not in ok_codes:
-        detail = (proc.stderr or proc.stdout).strip().splitlines()
-        raise CommandError(f"{args[0]}: exit {proc.returncode}: {detail[-1] if detail else 'no output'}")
+        lines = (proc.stderr or proc.stdout).strip().splitlines()
+        detail = lines[-1] if lines else "no output"
+        if secret:
+            detail = detail.replace(secret, "***")
+        raise CommandError(f"{args[0]}: exit {proc.returncode}: {detail}")
     return proc.stdout
 
 
