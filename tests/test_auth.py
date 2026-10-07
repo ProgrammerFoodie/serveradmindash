@@ -106,6 +106,35 @@ class SessionsTest(unittest.TestCase):
         self.assertEqual(again.count(), 1)
         self.assertIsNone(again.lookup(fresh))
 
+    def test_list_active_shows_valid_sign_ins_without_anything_that_could_take_one_over(self):
+        s = self.open("fp1")
+        old, csrf_old = s.create("1.1.1.1", "Agent one")
+        mine, csrf_mine = s.create("2.2.2.2", "Agent two")
+        self.age(s, 100)
+        s._db.execute("UPDATE sessions SET last_seen = last_seen + 90 WHERE ip = '2.2.2.2'")             # mine was active more recently
+        rows = s.list_active(mine)
+        self.assertEqual([(r["ip"], r["ua"], r["current"]) for r in rows], [("2.2.2.2", "Agent two", True), ("1.1.1.1", "Agent one", False)])
+        for row in rows:
+            self.assertRegex(row["id"], r"^[0-9a-f]{12}$")
+            self.assertTrue(0 < row["idle_left"] <= s.idle)
+        dump = str(rows)
+        for secret in (old, mine, csrf_old, csrf_mine, auth._token_hash(mine), auth._token_hash(old)):
+            self.assertNotIn(secret, dump)
+        self.assertEqual(len({r["id"] for r in rows}), 2)
+        self.assertEqual([r["current"] for r in s.list_active()], [False, False])                       # nobody is "you" without a token
+        self.assertEqual([r["current"] for r in s.list_active("not-a-token")], [False, False])
+
+    def test_list_active_leaves_out_idle_expired_and_foreign_sign_ins(self):
+        s = self.open("fp1")
+        idle, _ = s.create("1.1.1.1", "idle")
+        gone, _ = s.create("2.2.2.2", "expired")
+        fresh, _ = s.create("3.3.3.3", "fresh")
+        s._db.execute("UPDATE sessions SET last_seen = last_seen - ? WHERE ip = '1.1.1.1'", (s.idle + 5,))
+        s._db.execute("UPDATE sessions SET expires = 1 WHERE ip = '2.2.2.2'")
+        self.assertEqual([r["ip"] for r in s.list_active(fresh)], ["3.3.3.3"])
+        s._db.execute("UPDATE sessions SET fp = 'other' WHERE ip = '3.3.3.3'")
+        self.assertEqual(s.list_active(fresh), [])
+
     def test_default_idle_limit_is_fifteen_minutes(self):
         self.assertEqual(self.open("fp1").idle, 15 * 60)
 

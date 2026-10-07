@@ -119,6 +119,20 @@ class Sessions:
             self._db.execute("UPDATE sessions SET last_seen = ? WHERE token_hash = ?",
                              (int(time.time()), _token_hash(token)))
 
+    def list_active(self, current_token: str = "") -> list[dict]:
+        """Dashboard sign-ins that are still valid, most recently active first.
+
+        An id is the first 12 characters of the stored token hash: enough to tell sign-ins apart, and useless for
+        taking one over (the token cannot be recovered from its hash)."""
+        now = int(time.time())
+        mine = _token_hash(current_token) if current_token else None
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT token_hash, created, last_seen, expires, ip, ua FROM sessions "
+                "WHERE fp = ? AND expires >= ? AND ? - last_seen < ? ORDER BY last_seen DESC", (self._fp, now, now, self.idle)).fetchall()
+        return [{"id": h[:12], "created": created, "last_seen": last_seen, "expires": expires, "idle_left": self.idle - (now - last_seen),
+                 "ip": ip or "", "ua": ua or "", "current": h == mine} for h, created, last_seen, expires, ip, ua in rows]
+
     def revoke(self, token: str) -> None:
         with self._lock:
             self._db.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))

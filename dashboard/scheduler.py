@@ -28,7 +28,7 @@ class Scheduler:
         self.cfg = cfg
         self.history = history
         self.alerts = alerts
-        self.collectors = instances if instances is not None else collectors.create()
+        self.collectors = instances if instances is not None else collectors.create(cfg)
         self._data: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()

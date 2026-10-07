@@ -10,8 +10,10 @@ import services from "./tabs/services.js";
 import network from "./tabs/network.js";
 import security from "./tabs/security.js";
 import logs from "./tabs/logs.js";
+import users from "./tabs/users.js";
 
-const TABS = [overview, processes, services, network, security, logs];
+const BASE_TABS = [overview, processes, services, network, security, logs];
+let TABS = BASE_TABS;                          // the Users tab is added once the session says config.json switches it on
 const RANGES = ["1h", "6h", "24h", "7d", "30d", "90d"];
 const REFRESH_MS = 5000;
 
@@ -124,16 +126,17 @@ let bannerOpen = null;
 // ---- tabs -------------------------------------------------------------------------------------
 
 const instances = new Map();
-TABS.forEach((tab, i) => {
-  tabsNav.append(el("button", {
+function buildTabs() {
+  tabsNav.replaceChildren(...TABS.map((tab, i) => el("button", {
     class: "tab", role: "tab", id: `tab-${tab.id}`, "aria-selected": "false", "aria-controls": `panel-${tab.id}`,
     onclick: () => { location.hash = tab.id; },
     onkeydown: (e) => {
       const to = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : null;
       if (to !== null) { e.preventDefault(); const n = TABS[(to + TABS.length) % TABS.length]; location.hash = n.id; document.getElementById(`tab-${n.id}`).focus(); }
     },
-  }, tab.title));
-});
+  }, tab.title)));
+}
+buildTabs();
 
 function route() {
   const tab = TABS.find((t) => t.id === location.hash.slice(1)) || TABS[0];
@@ -282,6 +285,8 @@ document.getElementById("signout").addEventListener("click", () => api.signOut()
     if (!(e instanceof AuthError)) statusText.textContent = "cannot reach the server";
     return;
   }
+  if (ctx.session.admin.users) TABS = [...BASE_TABS, users];
+  buildTabs();
   window.addEventListener("hashchange", route);
   route();
 })();

@@ -40,6 +40,7 @@ TABS = {
     "network": ["net_io", "sockets", "tailscale"],
     "security": ["fail2ban", "logins", "ssh_auth", "updates"],
     "logs": ["journal", "nginx", "ssl"],
+    "users": ["users"],                       # only when admin.users is on
 }
 RANGES = {"1h": 3600, "6h": 6 * 3600, "24h": 86400, "7d": 7 * 86400, "30d": 30 * 86400, "90d": 90 * 86400}
 CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
@@ -437,15 +438,20 @@ class Handler(BaseHTTPRequestHandler):
             tab = one("tab", "overview")
             if tab not in TABS:
                 raise HttpError(400, f"unknown tab; use one of {', '.join(TABS)}")
+            if tab == "users":
+                app.require_feature("users")
             if tab == "processes":
                 app.scheduler.touch("processes")
             sections = {}
             for name in TABS[tab]:
                 t, data = app.scheduler.get(name)
                 sections[name] = None if t is None else {"t": round(t, 1), "data": data}
-            return self._json(200, {"tab": tab, "now": round(time.time(), 1), "sections": sections,
-                                    "alerts": app.alerts.snapshot() if app.alerts else evaluate(app.cfg, app.scheduler.snapshot()),
-                                    "power": app.power.live() if app.power else None})
+            body = {"tab": tab, "now": round(time.time(), 1), "sections": sections,
+                    "alerts": app.alerts.snapshot() if app.alerts else evaluate(app.cfg, app.scheduler.snapshot()),
+                    "power": app.power.live() if app.power else None}
+            if tab == "users":
+                body["dashboard_sessions"] = app.sessions.list_active(session["token"])
+            return self._json(200, body)
 
         if path == "/api/history":
             metrics = [m for m in one("metrics").split(",") if m][:MAX_METRICS]

@@ -8,12 +8,16 @@ run() wraps every collector so one broken source can never take down the page:
 an exception becomes {"error": "..."} in that section only.
 """
 
-from . import cpu, disks, logs, memory, network, processes, security, services, system
+from . import cpu, disks, logs, memory, network, processes, security, services, system, users
 
 
-def create() -> dict:
-    """Fresh collector instances (each keeps its own rate/log state)."""
-    return {
+def create(cfg: dict | None = None) -> dict:
+    """Fresh collector instances (each keeps its own rate/log state).
+
+    With a config, collectors that belong to an admin tool are created only if config.json switches the tool on.
+    Without one (tests, development) every collector is created."""
+    from ..config import admin_switches
+    instances = {
         # fast
         "cpu": cpu.Cpu(),
         "memory": memory.Memory(),
@@ -37,6 +41,9 @@ def create() -> dict:
         "updates": security.Updates(),
         "ssl": logs.Ssl(),
     }
+    if cfg is None or admin_switches(cfg)["users"]:
+        instances["users"] = users.Users()
+    return instances
 
 
 def run(collector, cfg: dict) -> dict:

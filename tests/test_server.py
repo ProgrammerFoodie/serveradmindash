@@ -470,6 +470,42 @@ class ActionApiTest(ServerTest):
         self.assertEqual(self.req("GET", "/api/audit?limit=99999", token=token)[2]["entries"][0]["limit"], 200)
 
 
+class UsersTabTest(ServerTest):
+    def setUp(self):
+        super().setUp()
+        self.sched.data["users"] = {"users": [{"name": "root", "uid": 0}], "sessions": [], "notes": {}, "sudo_source": "sudoers"}
+
+    def test_it_needs_a_session(self):
+        self.assertEqual(self.req("GET", "/api/live?tab=users")[0], 401)
+
+    def test_the_users_data_and_the_dashboard_sign_ins_arrive_together(self):
+        token, _ = self.signed_in()
+        other = self.req("POST", "/login", {"username": "admin", "password": PASSWORD}, {"X-Real-IP": "10.0.0.2", "User-Agent": "Other browser"})
+        self.assertEqual(other[0], 200)
+        status, response, body = self.req("GET", "/api/live?tab=users", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["sections"]["users"]["data"]["users"][0]["name"], "root")
+        sign_ins = body["dashboard_sessions"]
+        self.assertEqual(len(sign_ins), 2)
+        self.assertEqual([s["current"] for s in sign_ins].count(True), 1)
+        mine = next(s for s in sign_ins if s["current"])
+        self.assertEqual(mine["ip"], "10.0.0.1")
+        raw = json.dumps(body)
+        self.assertNotIn(token, raw)
+        for s in sign_ins:
+            self.assertEqual(len(s["id"]), 12)
+
+    def test_the_other_tabs_do_not_carry_the_sign_in_list(self):
+        token, _ = self.signed_in()
+        self.assertNotIn("dashboard_sessions", self.req("GET", "/api/live?tab=overview", token=token)[2])
+
+    def test_a_switched_off_tab_does_not_exist(self):
+        token, _ = self.signed_in()
+        self.app.admin = dict(self.app.admin, users=False)
+        self.assertEqual(self.req("GET", "/api/live?tab=users", token=token)[0], 404)
+        self.assertEqual(self.req("GET", "/api/live?tab=overview", token=token)[0], 200)
+
+
 class PowerApiTest(ServerTest):
     """Reboot, cancel and restart-all through the real server, with the real Actions and Power and a fake system underneath."""
 

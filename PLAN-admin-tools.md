@@ -3,7 +3,7 @@
 Adds to the dashboard: **reboot and "restart all services"**, **users and active sessions** with account management,
 **SSH keys** (view, add, remove, reveal private keys) and an **editable config viewer**. No web terminal: the dashboard stays terminal-less.
 
-Status: **phases 13 and 14 done** (2026-10-07); phases 15-19 not started. Decisions below were made by the owner on 2026-10-07.
+Status: **phases 13, 14 and 15 done** (2026-10-07); phases 16-19 not started. Decisions below were made by the owner on 2026-10-07.
 
 ### Phase 13: what was built, and how it differs from the text below
 - `config.json` `admin` block with the five switches (`dashboard/config.py`: `ADMIN_SWITCHES`, `admin_switches()`). Missing means off,
@@ -136,7 +136,27 @@ never appear in either.
 
 UI: a "Power" card at the top of the Services tab with both buttons.
 
-## Phase 15 - Users and sessions (read-only part)
+## Phase 15 - Users and sessions (read-only part)  (done)
+
+**As built, and where it differs from the text below:**
+- `dashboard/collectors/users.py` (medium cadence, 60 s) and `static/js/tabs/users.js` + `static/js/accounts.js`. The tab, the collector and
+  `GET /api/live?tab=users` exist only when `admin.users` is true (404 otherwise; `collectors.create(cfg)` leaves the collector out).
+  The page adds the tab after the session reports the switch.
+- Password states are `set`, `locked` (a password exists but is switched off), `none` (no password can be used: `*`, `!`) and
+  `empty` (anyone can log in), or `unknown` when not root. Hashes are dropped inside `parse_shadow`; a test checks none appears in the output.
+- Sudo is worked out by parsing sudoers (user specs, `%groups`, `#uids`, `User_Alias`, negation, `@includedir`, `NOPASSWD:`), giving
+  `full` or `limited`, where it comes from, and whether no password is needed. Without root it falls back to guessing from the groups
+  `sudo`, `admin` and `wheel`, and says so. Files in `sudoers.d` with a dot in their name are skipped, as sudo does.
+- Last login comes from `lastlog` (falls back to the wtmp history if lastlog is unreadable). Running processes are counted from `/proc`
+  directly; the process list collector is not needed.
+- `keys` counts non-comment lines of `~/.ssh/authorized_keys` through `safefs` (an unsafe path is reported, not read). This is an
+  approximation until phase 17 replaces it with the real parser.
+- Sessions: `loginctl` with idle state, service, tty, remote host, leader and process count (from the session's cgroup). Only class `user`
+  sessions are listed. Dashboard sign-ins come from `Sessions.list_active()`: id = first 12 characters of the token hash, never the token.
+- The Users tab also lists accounts sorted people-first; system accounts are hidden until "show system accounts" is ticked.
+- Not done here (belongs to phase 16): any button. The dialog shows details only.
+
+**The original plan for this phase:**
 
 New collector `users` (slow cadence, 60 s; refreshed immediately after any user action via `scheduler.touch`):
 

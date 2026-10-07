@@ -55,7 +55,7 @@ def cmd_check(args) -> int:
         _warn(f"using {path.name}; config.json is missing or root-only")
     if os.geteuid() != 0:
         _warn("not running as root; some sections will be partial")
-    available = collectors.create()
+    available = collectors.create(cfg)
     names = args.only or list(available)
     unknown = set(names) - set(available)
     if unknown:

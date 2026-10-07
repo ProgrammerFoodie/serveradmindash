@@ -47,6 +47,11 @@ watched services one by one (data stores first, nginx last), carries on after a 
 responder or tailscaled. To choose the order yourself: `"admin": { "power": true, "restart_order": ["redis-server", "app1", "nginx"] }`.
 Telegram hears about a reboot before it happens and when the server is back.
 
+**Users** (`admin.users`): a Users tab showing who is signed in (SSH, console and this dashboard, with a "you" marker) and every account:
+sudo rights (and whether sudo needs a password), locked, expired or empty passwords, last login, SSH key count, home folder and running
+processes. Click an account for everything about it. Password hashes are never sent to the page. Without root the dashboard still shows
+what it can and says what it could not read.
+
 ## Locking it down
 
 The service runs as root, so whoever can write to this folder can run code as root at the next restart. After development is finished:

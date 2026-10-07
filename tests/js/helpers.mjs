@@ -89,6 +89,53 @@ eq(summary.pressure([["CPU", { some: { avg10: 0 } }], ["memory", null]]).sub, "n
 eq(summary.pressure([["CPU", null]]).value, "–", "pressure unavailable");
 eq(summary.host({ uptime_s: 61200, os: "Ubuntu" }), { value: "up 17h 0m", sub: "Ubuntu" }, "host row");
 
+// Users tab: badges, details and browser names.
+const { accountBadges, accountDetails, browserLabel, sessionVia } = await import("../../static/js/accounts.js");
+const person = { type: "login", name: "alice", uid: 1000, primary_group: "alice", comment: "Alice", sudo: "full", sudo_via: ["sudoers"], nopasswd: false,
+  password: "set", password_expired: false, must_change: false, expired: false, keys: 2, keys_error: null, can_login: true, blockers: [], home: "/home/alice",
+  home_exists: true, home_owner: "alice", home_owner_ok: true, home_mode: "0750", shell: "/bin/bash", groups: ["alice", "sudo"], processes: 4,
+  last_login: { time: 1_699_999_000, from: "10.1.1.1", tty: "pts/0" }, expires: null, password_changed: 1_690_000_000, password_expires: null };
+const texts = (u) => accountBadges(u).map((b) => b.text);
+eq(texts(person), ["sudo", "2 keys"], "an ordinary sudo user");
+eq(texts({ ...person, sudo: "limited", nopasswd: true, keys: 1 }), ["sudo (limited)", "sudo without password", "1 key"], "limited sudo without a password");
+eq(texts({ ...person, sudo: null, keys: 0, password: "locked" }), ["locked", "no keys"], "locked and keyless");
+eq(texts({ ...person, sudo: null, password: "empty", expired: true, can_login: false, home_exists: false }), ["expired", "empty password", "2 keys", "cannot log in", "no home folder"], "the worrying ones");
+eq(texts({ ...person, sudo: null, password: "none", keys: null, keys_error: "x" }), ["no password", "keys unreadable"], "keys that cannot be read");
+eq(texts({ ...person, type: "system", sudo: null, password: "none", keys: null, can_login: false, home_exists: false }), [], "system accounts are not nagged about passwords, keys or homes");
+eq(texts({ ...person, sudo: null, must_change: true, password_expired: true }), ["password expired", "must change password", "2 keys"], "password age");
+eq(accountBadges(person)[0].kind, "info", "sudo is information, not alarm");
+eq(accountBadges({ ...person, password: "empty" }).find((b) => b.text === "empty password").kind, "crit", "an empty password is critical");
+const details = Object.fromEntries(accountDetails(person, [{ id: "7", user: "alice", from: "10.1.1.1", service: "sshd", since: 1_700_000_000 - 3600 }, { id: "8", user: "bob" }], 1_700_000_000));
+eq(details["Account"], "alice (user 1000, group alice)", "details: account");
+eq(details["Sudo"], "yes, all commands (sudoers)", "details: sudo");
+eq(details["Password"], "set", "details: password");
+eq(details["Signed in now"], "#7 from 10.1.1.1 via sshd, 1h 0m", "details: only this user's sessions");
+eq(details["Home folder"], "/home/alice (owner alice, mode 0750)", "details: home");
+eq(details["SSH keys"], "2", "details: keys");
+eq(details["Password expires"], "never", "details: no password expiry");
+eq(accountDetails({ ...person, last_login: null, keys: null, keys_error: "Permission denied" }, [], 0).find(([k]) => k === "Last login")[1], "never", "details: never logged in");
+eq(Object.fromEntries(accountDetails({ ...person, keys: null, keys_error: "Permission denied" }, [], 0))["SSH keys"], "cannot be checked: Permission denied", "details: keys error");
+eq(Object.fromEntries(accountDetails({ ...person, home_exists: false, home_mode: null }, [], 0))["Home folder"], "/home/alice (does not exist)", "details: missing home");
+eq(Object.fromEntries(accountDetails({ ...person, home_owner: "root", home_owner_ok: false }, [], 0))["Home folder"].includes("NOT owned"), true, "details: wrong owner is called out");
+eq(Object.fromEntries(accountDetails({ ...person, can_login: false, blockers: ["the account has expired"] }, [], 0))["Can log in"], "no: the account has expired", "details: why not");
+eq(Object.fromEntries(accountDetails({ ...person, password: "unknown" }, [], 0))["Password"].startsWith("unknown"), true, "details: unknown password state");
+eq(sessionVia({ service: "sshd", tty: "pts/1" }), "SSH · pts/1", "ssh session"); eq(sessionVia({ service: "login", tty: "tty1" }), "console · tty1", "console session"); eq(sessionVia({ service: "sshd", tty: "" }), "SSH", "no tty"); eq(sessionVia({}), "?", "unknown service");
+const UA = {
+  chromeMac: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+  safariMac: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15",
+  safariPhone: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
+  chromePhone: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0.0.0 Mobile/15E148 Safari/604.1",
+  firefoxWin: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
+  edgeWin: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+  chromeAndroid: "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+  firefoxLinux: "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+  webview: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.0.0 Mobile Safari/537.36",
+};
+eq([UA.chromeMac, UA.safariMac, UA.safariPhone, UA.chromePhone, UA.firefoxWin, UA.edgeWin, UA.chromeAndroid, UA.firefoxLinux, UA.webview].map(browserLabel),
+  ["Chrome on macOS", "Safari on macOS", "Safari on iOS", "Chrome on iOS", "Firefox on Windows", "Edge on Windows", "Chrome on Android", "Firefox on Linux", "Chrome on Android"], "browser names");
+eq([browserLabel("curl/8.5.0"), browserLabel(""), browserLabel(null), browserLabel(undefined), browserLabel("   ")], ["curl", "unknown browser", "unknown browser", "unknown browser", "unknown browser"], "odd user agents");
+eq(browserLabel("x".repeat(500)).length <= 30, true, "a long agent string is cut");
+
 // Card ordering (drag and drop): the rules behind the grips.
 const { applyOrder, moveKey, neighbourKey } = await import("../../static/js/dragsort.js");
 const natural = ["live", "cpu", "memory", "swap", "io", "net"];
