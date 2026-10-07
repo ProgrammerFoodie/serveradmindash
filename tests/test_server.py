@@ -268,6 +268,57 @@ class CsrfTest(ServerTest):
         self.assertEqual(self.req("GET", "/api/session", token=token)[0], 401)     # session is really gone
 
 
+class IdleTimeoutTest(ServerTest):
+    def age(self, seconds):
+        self.sessions._db.execute("UPDATE sessions SET last_seen = last_seen - ?", (seconds,))
+
+    def test_session_reports_the_limit(self):
+        token, _ = self.signed_in()
+        self.assertEqual(self.req("GET", "/api/session", token=token)[2]["idle_s"], 15 * 60)
+
+    def test_inactive_session_is_rejected_everywhere(self):
+        token, csrf = self.signed_in()
+        self.age(16 * 60)
+        self.assertEqual(self.req("GET", "/api/live?tab=overview", token=token)[0], 401)
+        self.assertEqual(self.req("POST", "/api/session/ping", {}, token=token, csrf=csrf)[0], 401)
+        status, r, _ = self.req("GET", "/", token=token)
+        self.assertEqual((status, r.getheader("Location")), (302, "/login"))
+
+    def test_polling_does_not_keep_a_session_alive(self):
+        token, _ = self.signed_in()
+        self.age(14 * 60)
+        for path in ("/api/live?tab=overview", "/api/session", "/api/alerts"):
+            self.assertEqual(self.req("GET", path, token=token)[0], 200, path)
+        self.age(2 * 60)                                   # 16 minutes since the person last did anything
+        self.assertEqual(self.req("GET", "/api/session", token=token)[0], 401)
+
+    def test_ping_keeps_it_alive_and_needs_csrf(self):
+        token, csrf = self.signed_in()
+        self.age(14 * 60)
+        self.assertEqual(self.req("POST", "/api/session/ping", {}, token=token)[0], 403)      # no CSRF token: no activity
+        status, _, body = self.req("POST", "/api/session/ping", {}, token=token, csrf=csrf)
+        self.assertEqual((status, body["ok"], body["idle_left"]), (200, True, 15 * 60))
+        self.age(10 * 60)
+        self.assertEqual(self.req("GET", "/api/session", token=token)[0], 200)                # clock restarted by the ping
+
+    def test_opening_the_page_and_pressing_buttons_count_as_activity(self):
+        token, csrf = self.signed_in()
+        self.age(14 * 60)
+        self.assertEqual(self.req("GET", "/", token=token)[0], 200)
+        self.age(14 * 60)
+        self.assertEqual(self.req("POST", "/api/alerts/unmute", {}, token=token, csrf=csrf)[0], 400)   # rejected input, but a person pressed it
+        self.age(14 * 60)
+        self.assertEqual(self.req("GET", "/api/session", token=token)[0], 200)
+
+    def test_a_forged_post_cannot_extend_a_session(self):
+        token, _ = self.signed_in()
+        self.age(14 * 60)
+        self.req("POST", "/api/session/ping", {}, token=token, csrf="wrong")
+        self.req("POST", "/api/session/ping", {}, headers={"Origin": "https://evil.example"}, token=token, csrf="wrong")
+        self.age(2 * 60)
+        self.assertEqual(self.req("GET", "/api/session", token=token)[0], 401)
+
+
 class ApiTest(ServerTest):
     def test_live(self):
         token, _ = self.signed_in()

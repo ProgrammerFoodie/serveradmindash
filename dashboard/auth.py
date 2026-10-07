@@ -14,6 +14,7 @@ SESSION_COOKIE = "__Host-sid"   # the __Host- prefix makes browsers insist on Se
 MIN_PASSWORD_LEN = 10
 MAX_PASSWORD_LEN = 1024         # scrypt cost does not depend on length, but there is no reason to accept megabytes
 MAX_SESSIONS = 20
+DEFAULT_IDLE_MINUTES = 15       # a session with no user activity for this long must sign in again
 
 # scrypt cost: n=2^14, r=8 needs 16 MB RAM and ~150 ms per check on this 1 vCPU box.
 _N, _R, _P = 2**14, 8, 1
@@ -56,20 +57,26 @@ class Sessions:
 
     Only the SHA-256 of the session token is stored, so a copy of the database cannot be
     used to impersonate a session. Changing the password or username invalidates every session.
+
+    A session ends when it is older than `hours`, or when nothing has called touch() for `idle_minutes`.
+    lookup() never counts as activity: the page polls every few seconds, and that must not keep an
+    unattended browser signed in. Only requests a person makes (page load, buttons, the front end's
+    input heartbeat) call touch().
     """
 
-    TOUCH_EVERY = 60  # seconds between last_seen updates, to avoid a disk write per request
-
-    def __init__(self, path, cred_fingerprint: str, hours: float):
+    def __init__(self, path, cred_fingerprint: str, hours: float, idle_minutes: float = DEFAULT_IDLE_MINUTES):
         self._lock = threading.Lock()
         self._fp = cred_fingerprint
         self.ttl = int(hours * 3600)
+        self.idle = int(idle_minutes * 60)
         self._db = sqlite3.connect(str(path), check_same_thread=False, timeout=10, isolation_level=None)
         self._db.execute(
             "CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, csrf TEXT NOT NULL, fp TEXT NOT NULL, "
             "created INTEGER NOT NULL, last_seen INTEGER NOT NULL, expires INTEGER NOT NULL, ip TEXT, ua TEXT)")
         os.chmod(path, 0o600)
-        self._db.execute("DELETE FROM sessions WHERE fp != ? OR expires < ?", (self._fp, int(time.time())))
+        now = int(time.time())
+        self._db.execute("DELETE FROM sessions WHERE fp != ? OR expires < ? OR last_seen <= ?",
+                         (self._fp, now, now - self.idle))
 
     def close(self) -> None:
         with self._lock:
@@ -80,7 +87,7 @@ class Sessions:
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         now = int(time.time())
         with self._lock:
-            self._db.execute("DELETE FROM sessions WHERE expires < ?", (now,))
+            self._db.execute("DELETE FROM sessions WHERE expires < ? OR last_seen <= ?", (now, now - self.idle))
             self._db.execute(
                 "DELETE FROM sessions WHERE token_hash IN (SELECT token_hash FROM sessions "
                 "ORDER BY last_seen DESC LIMIT -1 OFFSET ?)", (MAX_SESSIONS - 1,))
@@ -89,6 +96,7 @@ class Sessions:
         return token, csrf
 
     def lookup(self, token: str) -> dict | None:
+        """The live session for this token, or None. Read-only apart from deleting a dead session."""
         if not token or len(token) > 128:
             return None
         now = int(time.time())
@@ -99,12 +107,17 @@ class Sessions:
             if row is None:
                 return None
             csrf, fp, created, last_seen, expires, ip = row
-            if expires < now or not hmac.compare_digest(fp, self._fp):
+            if expires < now or now - last_seen >= self.idle or not hmac.compare_digest(fp, self._fp):
                 self._db.execute("DELETE FROM sessions WHERE token_hash = ?", (_token_hash(token),))
                 return None
-            if now - last_seen >= self.TOUCH_EVERY:
-                self._db.execute("UPDATE sessions SET last_seen = ? WHERE token_hash = ?", (now, _token_hash(token)))
-        return {"csrf": csrf, "created": created, "expires": expires, "ip": ip}
+        return {"csrf": csrf, "created": created, "expires": expires, "ip": ip,
+                "idle_left": self.idle - (now - last_seen)}
+
+    def touch(self, token: str) -> None:
+        """Record user activity: restart the idle clock of a session that lookup() just accepted."""
+        with self._lock:
+            self._db.execute("UPDATE sessions SET last_seen = ? WHERE token_hash = ?",
+                             (int(time.time()), _token_hash(token)))
 
     def revoke(self, token: str) -> None:
         with self._lock:

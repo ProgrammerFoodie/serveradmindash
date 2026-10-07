@@ -64,6 +64,51 @@ class SessionsTest(unittest.TestCase):
         self.assertIsNone(s.lookup(token))
         self.assertEqual(s.count(), 0)
 
+    def age(self, s, seconds):
+        """Pretend the last activity was `seconds` ago."""
+        s._db.execute("UPDATE sessions SET last_seen = last_seen - ?", (seconds,))
+
+    def test_idle_session_must_sign_in_again(self):
+        s = auth.Sessions(self.path, "fp1", hours=1, idle_minutes=15)
+        self.addCleanup(s.close)
+        token, _ = s.create("1.2.3.4", "agent")
+        self.age(s, 14 * 60)
+        self.assertIsNotNone(s.lookup(token))              # 14 minutes of silence: still signed in
+        self.age(s, 2 * 60)
+        self.assertIsNone(s.lookup(token))                 # 16 minutes: gone
+        self.assertEqual(s.count(), 0)
+
+    def test_lookup_is_not_activity_but_touch_is(self):
+        s = auth.Sessions(self.path, "fp1", hours=1, idle_minutes=15)
+        self.addCleanup(s.close)
+        token, _ = s.create("1.2.3.4", "agent")
+        self.age(s, 10 * 60)
+        for _ in range(3):
+            s.lookup(token)                                # the page polling must not reset the clock
+        left = s.lookup(token)["idle_left"]
+        self.assertTrue(289 <= left <= 300, left)
+        s.touch(token)
+        self.assertTrue(s.lookup(token)["idle_left"] >= 899)
+        self.age(s, 10 * 60)
+        self.assertIsNotNone(s.lookup(token))              # 10 min after the touch: alive
+
+    def test_idle_sessions_are_dropped_at_startup_and_on_new_login(self):
+        s = auth.Sessions(self.path, "fp1", hours=1, idle_minutes=15)
+        old, _ = s.create("1.2.3.4", "agent")
+        self.age(s, 20 * 60)
+        s.close()
+        again = auth.Sessions(self.path, "fp1", hours=1, idle_minutes=15)
+        self.addCleanup(again.close)
+        self.assertEqual(again.count(), 0)                 # a restart does not revive an abandoned session
+        fresh, _ = again.create("1.2.3.4", "agent")
+        self.age(again, 20 * 60)
+        again.create("1.2.3.4", "agent")
+        self.assertEqual(again.count(), 1)
+        self.assertIsNone(again.lookup(fresh))
+
+    def test_default_idle_limit_is_fifteen_minutes(self):
+        self.assertEqual(self.open("fp1").idle, 15 * 60)
+
     def test_session_cap_drops_the_least_recently_used(self):
         s = self.open("fp1")
         tokens = [s.create("1.2.3.4", "a")[0] for _ in range(auth.MAX_SESSIONS + 3)]

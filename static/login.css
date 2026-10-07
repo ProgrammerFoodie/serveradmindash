@@ -7,3 +7,5 @@ form#f input:focus { outline: 2px solid var(--accent); border-color: transparent
 form#f button { padding: 10px 14px; background: var(--accent); color: #06101f; border: 0; border-radius: 8px; font-weight: 600; cursor: pointer; }
 form#f button:disabled { opacity: .6; cursor: wait; }
 #msg { margin: 0; min-height: 1.4em; color: var(--crit); font-size: 13px; }
+#note { margin: 0; color: var(--dim); font-size: 13px; }
+#note:empty { display: none; }

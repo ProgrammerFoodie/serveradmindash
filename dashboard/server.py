@@ -191,6 +191,8 @@ class Handler(BaseHTTPRequestHandler):
         return session
 
     def _need_session(self, post: bool = False) -> dict:
+        """The signed-in session. A POST is always something a person did, so it also counts as
+        activity for the idle timeout; GETs (the page's own polling) do not."""
         session = self._session()
         if session is None:
             raise HttpError(401, "not signed in")
@@ -199,6 +201,8 @@ class Handler(BaseHTTPRequestHandler):
             sent = self.headers.get("X-CSRF-Token", "")
             if not sent or not hmac.compare_digest(sent, session["csrf"]):
                 raise HttpError(403, "missing or wrong CSRF token")
+            self.app.sessions.touch(session["token"])
+            session["idle_left"] = self.app.sessions.idle
         return session
 
     # ---- dispatch ------------------------------------------------------------------------
@@ -219,11 +223,15 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path.startswith("/static/"):
                 return self._static(unquote(path[len("/static/"):]))
             if route == ("GET", "/"):
-                if self._session() is None:
+                session = self._session()
+                if session is None:
                     return self._redirect("/login")
+                self.app.sessions.touch(session["token"])      # opening or reloading the page is activity
                 return self._page("index.html")
             if route == ("POST", "/logout"):
                 return self._logout()
+            if route == ("POST", "/api/session/ping"):
+                return self._json(200, {"ok": True, "idle_left": self._need_session(post=True)["idle_left"]})
             if route == ("POST", "/api/alerts/mute"):
                 return self._alert_mute()
             if route == ("POST", "/api/alerts/unmute"):
@@ -369,6 +377,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"user": app.cfg["auth"]["username"], "csrf": session["csrf"],
                                     "version": __version__, "host": app.public_host,
                                     "expires": session["expires"], "server_time": round(time.time()),
+                                    "idle_s": app.sessions.idle,
                                     "thresholds": app.cfg["thresholds"],
                                     "actions": app.actions is not None,
                                     "protected": sorted(app.actions.protected) if app.actions else []})

@@ -21,6 +21,7 @@ Built, installed and verified on 2026-10-06, including a reboot.
 |---|---|
 | Open it | https://admin.example.com with Tailscale on (laptop or phone) |
 | Change the login password | `sudo python3 -m dashboard set-password`, then `sudo systemctl restart server-dashboard` |
+| Change the inactivity sign-out (default 15 min) | set `auth.idle_minutes` (1 to 1440) in `config.json`, then restart the service |
 | Change Telegram or alert settings | edit `config.json` as root, then `sudo systemctl restart server-dashboard` (the config is read at start) |
 | Update the code | `git pull` (as the folder owner), then `sudo systemctl restart server-dashboard` |
 | Dashboard logs | `journalctl -u server-dashboard -f` |

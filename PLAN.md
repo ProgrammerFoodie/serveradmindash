@@ -156,7 +156,7 @@ It must print `203.0.113.10`. Only Phase 9 (the certificate) depends on this. Ev
 {
   "listen": "127.0.0.1:9100",
   "public_host": "admin.example.com",
-  "auth": { "username": "admin", "password_hash": "", "session_hours": 720 },
+  "auth": { "username": "admin", "password_hash": "", "session_hours": 720, "idle_minutes": 15 },
   "telegram": { "bot_token": "", "chat_id": "", "enabled": true },
   "watch": {
     "systemd": ["nginx", "app1", "app2", "redis-server", "supervisor", "smbd",
@@ -272,6 +272,7 @@ Implementation notes:
 4.2 Auth:
 - The password is hashed with `hashlib.scrypt` (n=2^14, r=8, p=1, 16-byte salt) and checked with `hmac.compare_digest`. A wrong username does the same amount of work as a wrong password, so timing does not reveal which was wrong.
 - The session is a random token (`secrets.token_urlsafe(32)`). Only its SHA-256 is stored, in `data/auth.db` (mode 600), so a restart does not log you out. At most 20 sessions exist at once, and changing the username or password ends all of them.
+- **Idle timeout:** a session also ends after `auth.idle_minutes` (default 15) without activity. Activity is what a person does: opening the page, pressing a button (any POST), or moving, typing, touching or scrolling in the open tab (the page sends a heartbeat, `POST /api/session/ping`, at most every 15 s while that happens). The 5-second polling is deliberately not activity, otherwise an unattended tab would stay signed in forever. The page signs out on time itself and shows a note on the login screen; the server enforces the same limit, so closing the tab or a stopped timer cannot keep a session alive, and a restart does not revive an abandoned session.
 - The cookie is `__Host-sid` with `Secure; HttpOnly; SameSite=Lax; Path=/`, lasting 30 days (configurable). It is `Lax` rather than `Strict` so that a link tapped in a Telegram alert opens the dashboard already signed in. Cross-site POSTs are blocked by the CSRF and Origin checks below, not by the cookie alone.
 - **CSRF:** every POST must carry an `X-CSRF-Token` header that matches the session's token, an `Origin` that is our own, and no cross-site `Sec-Fetch-Site`. The `Host` header must also be ours, which blocks DNS-rebinding.
 - **Login throttling:** 5 failures per 15 minutes per client address, and 30 per 15 minutes overall. The overall limit exists because any local process can forge the `X-Real-IP` header, so rotating fake addresses would otherwise defeat the per-address limit. Failures are logged with the address only, never the typed text (people paste passwords into the username box). Failed and successful logins are saved as events, ready for the Telegram "new device" alert in phase 6.
@@ -293,7 +294,7 @@ Plain HTML, CSS and JavaScript modules in `static/` (no framework, no build step
 
 - **Refresh:** only the visible tab is fetched, every 5 s, and polling pauses while the browser tab is hidden (this saves phone battery and server load; it also means a tab opened in the background shows "connecting…" until you look at it). The header shows `live` / `updated Ns ago` / `no connection`.
 - **Alert banner:** `/api/live` carries the current alerts (`dashboard/alerts.py`, `evaluate()`), shown above every tab: red for critical, amber for warning, blue for notices, collapsed unless something is critical. Phase 6 adds timing, de-duplication and Telegram around the same rules.
-- **Overview:** host, CPU, memory, swap, one card per filesystem, disk activity, network and pressure cards, coloured by the configured thresholds; nine history charts (CPU, load, memory and swap, swap traffic, disk busy, disk throughput, network, pressure, disk space) with a 1h/6h/24h/7d/30d/90d range picker.
+- **Overview:** a full-width **Live usage** panel shows each resource on one compact line (CPU, memory, swap, each filesystem, disk activity, network, pressure, host), coloured by the configured thresholds. Clicking a line opens that resource's card below the panel, with its history graphs (1h/6h/24h/7d/30d/90d) and its details; only open cards load history. Cards can be dragged by their ⠿ grip (or moved with the arrow keys) into any order. Which cards are open and their order are kept per browser (`localStorage`); a first visit opens CPU and Memory, and "Reset order" restores the natural order.
 - **Processes:** every process with sortable columns and a filter box, plus RAM, swap and CPU per service.
 - **Services:** systemd units (status, uptime, CPU, RAM, swap, restarts), failed units, supervisor programs, timers, and a log viewer per service. Start, stop and restart buttons arrive with phase 7.
 - **Network:** interfaces with a traffic chart, every listening port with who can reach it, connection states and top remote addresses, Tailscale devices.

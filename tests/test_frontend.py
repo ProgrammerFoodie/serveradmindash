@@ -12,6 +12,10 @@ class FrontendTest(unittest.TestCase):
         run = subprocess.run(["node", str(ROOT / "tests/js/helpers.mjs")], capture_output=True, text=True, timeout=30)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_overview_renders_and_its_rows_open_and_close(self):
+        run = subprocess.run(["node", str(ROOT / "tests/js/overview_smoke.mjs")], capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_every_script_parses(self):
         for path in sorted((ROOT / "static").rglob("*.js")):
             run = subprocess.run(["node", "--input-type=module", "--check"], input=path.read_text(), capture_output=True, text=True, timeout=30)

@@ -1,6 +1,7 @@
 // Shell: session, tab routing, the 5-second refresh of the visible tab, the alert statusbar.
 
 import { api, AuthError } from "./api.js";
+import { watchIdle } from "./idle.js";
 import { append, clear, el, fmtAgo, fmtDuration, store } from "./util.js";
 import overview from "./tabs/overview.js";
 import processes from "./tabs/processes.js";
@@ -232,10 +233,7 @@ function renderBanner(alerts) {
 
 // ---- start ------------------------------------------------------------------------------------
 
-document.getElementById("signout").addEventListener("click", async () => {
-  try { await api.post("/logout"); } catch { /* the session may already be gone */ }
-  location.href = "/login";
-});
+document.getElementById("signout").addEventListener("click", () => api.signOut());
 
 (async () => {
   try {
@@ -243,6 +241,7 @@ document.getElementById("signout").addEventListener("click", async () => {
     ctx.thresholds = session.thresholds || {};
     ctx.session = { actions: !!session.actions, protected: session.protected || [] };
     document.getElementById("who").textContent = `${session.user} @ ${session.host}`;
+    watchIdle(session.idle_s, { onIdle: () => api.signOut("idle"), ping: () => api.ping() });
   } catch (e) {
     if (!(e instanceof AuthError)) statusText.textContent = "cannot reach the server";
     return;

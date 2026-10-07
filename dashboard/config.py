@@ -43,6 +43,12 @@ def _check(value, schema, where: str) -> None:
 def validate(cfg: dict) -> None:
     _check(cfg, _SCHEMA, "config")
 
+    if "idle_minutes" in cfg["auth"]:           # optional: configs written before it existed still load
+        idle = cfg["auth"]["idle_minutes"]
+        _check(idle, NUMBER, "config.auth.idle_minutes")
+        if not 1 <= idle <= 1440:
+            raise ConfigError("config.auth.idle_minutes: expected 1 to 1440 minutes")
+
     host, _, port = cfg["listen"].rpartition(":")
     if not host or not port.isdigit() or not 0 < int(port) < 65536:
         raise ConfigError(f"config.listen: expected host:port, got {cfg['listen']!r}")

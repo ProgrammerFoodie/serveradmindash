@@ -52,9 +52,10 @@ function axisTime(ts, rangeS) {
 export class LineChart {
   /**
    * series: [{metric, label, color 1-6}]; unit: percent|bytes|rate|ms|number|count;
-   * yMax: fixed axis maximum (else automatic, at least minMax); bars: draw columns instead of a line.
+   * yMax: fixed axis maximum (else automatic, at least minMax); bars: draw columns instead of a line;
+   * bare: no card around it, for placing inside another card.
    */
-  constructor({ title, unit = "number", series, yMax = null, minMax = 0, fill = false, bars = false, showMax = true, note = "" }) {
+  constructor({ title, unit = "number", series, yMax = null, minMax = 0, fill = false, bars = false, showMax = true, note = "", bare = false }) {
     Object.assign(this, { title, unit, series, yMax, minMax, fill, bars, showMax });
     this.fmt = UNITS[unit] || UNITS.number;
     this.res = null;
@@ -63,7 +64,7 @@ export class LineChart {
     this.tip = el("div", { class: "tip", hidden: true });
     this.plot = el("div", { class: "chart" }, this.canvas, this.tip);
     this.noteEl = el("p", { class: "chart-note", hidden: !note }, note);
-    this.el = el("section", { class: "card" },
+    this.el = el("section", { class: bare ? "chart-block" : "card" },
       el("div", { class: "chart-head" },
         el("h3", null, title),
         el("div", { class: "legend" }, series.map((s, i) => el("span", { class: `c${s.color || i + 1}` }, s.label)))),
@@ -260,7 +261,13 @@ const MAX_METRICS_PER_REQUEST = 40;
 export class ChartGroup {
   constructor(ctx) { this.ctx = ctx; this.charts = []; this.last = 0; this.rangeUsed = null; this.busy = false; }
 
-  add(chart) { this.charts.push(chart); this.last = 0; return chart; }
+  add(chart) {
+    if (!this.charts.includes(chart)) { this.charts.push(chart); this.last = 0; }   // new charts load at the next refresh
+    return chart;
+  }
+
+  /** Stop loading data for a chart (its card was closed); it keeps what it has drawn. */
+  remove(chart) { this.charts = this.charts.filter((c) => c !== chart); }
 
   metrics() { return [...new Set(this.charts.flatMap((c) => c.series.map((s) => s.metric)))]; }
 

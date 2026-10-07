@@ -1,5 +1,10 @@
 const form = document.getElementById("f");
 const msg = document.getElementById("msg");
+const NOTES = {
+  idle: "You were signed out because of inactivity. Sign in again to continue.",
+  expired: "Your session has ended. Sign in again to continue.",
+};
+document.getElementById("note").textContent = NOTES[new URLSearchParams(location.search).get("why")] || "";
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const button = form.querySelector("button");

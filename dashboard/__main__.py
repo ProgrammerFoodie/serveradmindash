@@ -136,7 +136,8 @@ def cmd_serve(args) -> int:
     history = History(config.DATA_DIR / "history.db")
     sessions = auth.Sessions(config.DATA_DIR / "auth.db",
                              auth.fingerprint(cfg["auth"]["password_hash"], cfg["auth"]["username"]),
-                             cfg["auth"]["session_hours"])
+                             cfg["auth"]["session_hours"],
+                             cfg["auth"].get("idle_minutes", auth.DEFAULT_IDLE_MINUTES))
     notifier = Notifier(cfg)
     alerts = AlertManager(cfg, notifier, history, state_path=config.DATA_DIR / "alert_state.json")
     scheduler = Scheduler(cfg, history, alerts=alerts)
