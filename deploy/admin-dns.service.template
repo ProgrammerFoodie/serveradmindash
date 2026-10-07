@@ -1,6 +1,6 @@
 [Unit]
 Description=Split-DNS responder: @DOMAIN@ -> Tailscale address
-Documentation=file:///mnt/Extra20/admin/PLAN.md
+Documentation=https://github.com/ProgrammerFoodie/serveradmindash
 # Not ordered after tailscaled: the responder binds with IP_FREEBIND, so it starts fine before tailscale0 exists.
 After=network.target
 RequiresMountsFor=/mnt/Extra20

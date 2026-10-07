@@ -114,7 +114,7 @@ def load(path: Path | None = None, allow_example: bool = False) -> tuple[dict, P
         text = path.read_text()
     except (FileNotFoundError, PermissionError) as e:
         if not allow_example:
-            hint = "run with sudo" if isinstance(e, PermissionError) else "see PLAN.md step 1.4"
+            hint = "run with sudo" if isinstance(e, PermissionError) else "copy config.example.json to config.json (see the README)"
             raise ConfigError(f"cannot read {path} ({e.strerror}); {hint}") from None
         path = EXAMPLE_PATH
         text = path.read_text()
