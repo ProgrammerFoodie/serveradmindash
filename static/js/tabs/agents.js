@@ -4,7 +4,7 @@ import { dataTable, el, fmtAgo, fmtDateTime, fmtDuration, fmtNum, fmtTokens, pan
 const sum = (a) => a.reduce((x, y) => x + y, 0);
 
 // Time windows, in days ending today; "ytd" counts the days since 1 January of the newest day in the data.
-const RANGES = [["1d", "1 day", 1], ["7d", "7 days", 7], ["1m", "1 month", 30], ["6m", "6 months", 182], ["1y", "1 year", 365], ["ytd", "Year to date", 0]];
+const RANGES = [["1d", "1 day", 1], ["7d", "7 days", 7], ["30d", "30 days", 30], ["365d", "365 days", 365], ["ytd", "Year to date", 0]];
 
 /** The report cut to its last `n` days (all agents that ran in them), with totals recomputed. */
 function windowed(d, key) {
@@ -34,7 +34,7 @@ export default {
         chart.setMode(mode); buttons.forEach((b) => b.setAttribute("aria-pressed", String(b === btn(mode))));
       } }, label));
     const btn = (mode) => buttons[mode === "tokens" ? 0 : 1];
-    let range = "1m", report = null;
+    let range = "30d", report = null;
     const rangeButtons = RANGES.map(([key, label]) =>
       el("button", { type: "button", "aria-pressed": String(key === range), onclick: () => {
         range = key; rangeButtons.forEach((b, i) => b.setAttribute("aria-pressed", String(RANGES[i][0] === key)));
