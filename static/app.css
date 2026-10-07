@@ -158,6 +158,7 @@ body.busy .actions .btn, body.busy .statusbar .btn { pointer-events: none; opaci
 
 /* ---- overview board: a compact Live usage list, with a card (details + graphs) per opened row ---- */
 .board { display: grid; gap: 12px; align-items: start; grid-template-columns: repeat(auto-fill, minmax(min(100%, 430px), 1fr)); }
+.board.masonry { grid-auto-rows: 4px; row-gap: 0; }   /* see masonry.js: cards span rows by height */
 .board > .card { padding: 10px 12px; }
 .board > .card > h3 { margin-bottom: 6px; }
 .card-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

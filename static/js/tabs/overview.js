@@ -2,6 +2,7 @@ import { ChartGroup, LineChart } from "../chart.js";
 import { badge, bar, el, fmtBytes, fmtDuration, fmtNum, fmtPct, fmtRate, isNum, kv, level, paint, store } from "../util.js";
 import { summary } from "../usage.js";
 import { makeSortable } from "../dragsort.js";
+import { masonry } from "../masonry.js";
 
 // The Overview is a board of cards. "Live usage" lists every resource on one compact line; opening a row
 // shows that resource's card (details and history graphs) next to it. Cards can be dragged into any order.
@@ -52,6 +53,7 @@ export default {
     const open = new Set(loadList(OPEN_KEY, DEFAULT_OPEN));
     const items = new Map();                       // key → row + card; disks are added as they appear
     const board = el("div", { class: "board" });
+    masonry(board);
     const list = el("div", { class: "usage-list" });
     let sortable = null;
 
