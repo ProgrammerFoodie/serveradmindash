@@ -64,10 +64,10 @@ class HttpError(Exception):
 class App:
     """Everything a request handler needs."""
 
-    def __init__(self, cfg, scheduler, history, sessions: Sessions, limiter: LoginLimiter | None = None, alerts=None, actions=None):
+    def __init__(self, cfg, scheduler, history, sessions: Sessions, limiter: LoginLimiter | None = None, alerts=None, actions=None, power=None):
         self.cfg, self.scheduler, self.history, self.sessions = cfg, scheduler, history, sessions
         self.admin = config.admin_switches(cfg)          # which admin tools are on; fixed for the life of the process
-        self.alerts, self.actions = alerts, actions
+        self.alerts, self.actions, self.power = alerts, actions, power
         self.limiter = limiter or LoginLimiter()
         host, _, port = cfg["listen"].rpartition(":")
         self.public_host = cfg["public_host"].lower()
@@ -245,6 +245,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._alert_unmute()
             if route == ("POST", "/api/telegram/test"):
                 return self._telegram_test()
+            if route == ("POST", "/api/power/reboot"):
+                return self._power("power.reboot")
+            if route == ("POST", "/api/power/cancel"):
+                return self._power("power.cancel")
+            if route == ("POST", "/api/power/restart-all"):
+                return self._restart_all()
             if route == ("POST", "/api/action/service"):
                 return self._action("service")
             if route == ("POST", "/api/action/process"):
@@ -373,6 +379,31 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(e.status, e.message) from None
         self._json(200, result)
 
+    def _power(self, kind: str) -> None:
+        """Reboot or cancel a pending shutdown. The rules live in power.py; this checks the session, CSRF and switch."""
+        self._need_session(post=True)
+        self.app.require_feature("power")
+        body, app = self._read_json(), self.app
+        if not app.actions or not app.power:
+            raise HttpError(404, "not found")
+        try:
+            result = app.actions.perform(kind, body, {"user": app.cfg["auth"]["username"], "ip": self.client_ip()})
+        except ActionError as e:
+            raise HttpError(e.status, e.message) from None
+        self._json(200, result)
+
+    def _restart_all(self) -> None:
+        self._need_session(post=True)
+        self.app.require_feature("power")
+        body, app = self._read_json(), self.app
+        if not app.actions or not app.power:
+            raise HttpError(404, "not found")
+        try:
+            job = app.power.start_restart_all(body, {"user": app.cfg["auth"]["username"], "ip": self.client_ip()})
+        except ActionError as e:
+            raise HttpError(e.status, e.message) from None
+        self._json(200, {"ok": True, "job": job.id, "detail": "restarting the services; progress is shown below"})
+
     # ---- API -----------------------------------------------------------------------------
 
     def _api(self, path: str, qs: dict) -> None:
@@ -388,6 +419,12 @@ class Handler(BaseHTTPRequestHandler):
                                     "thresholds": app.cfg["thresholds"],
                                     "actions": app.actions is not None, "admin": app.admin,
                                     "protected": sorted(app.actions.protected) if app.actions else []})
+
+        if path == "/api/power":
+            app.require_feature("power")
+            if not app.power:
+                raise HttpError(404, "not found")
+            return self._json(200, app.power.describe())
 
         if path.startswith("/api/jobs/"):
             job_id = path[len("/api/jobs/"):]
@@ -407,7 +444,8 @@ class Handler(BaseHTTPRequestHandler):
                 t, data = app.scheduler.get(name)
                 sections[name] = None if t is None else {"t": round(t, 1), "data": data}
             return self._json(200, {"tab": tab, "now": round(time.time(), 1), "sections": sections,
-                                    "alerts": app.alerts.snapshot() if app.alerts else evaluate(app.cfg, app.scheduler.snapshot())})
+                                    "alerts": app.alerts.snapshot() if app.alerts else evaluate(app.cfg, app.scheduler.snapshot()),
+                                    "power": app.power.live() if app.power else None})
 
         if path == "/api/history":
             metrics = [m for m in one("metrics").split(",") if m][:MAX_METRICS]

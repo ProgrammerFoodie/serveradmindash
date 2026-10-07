@@ -41,6 +41,12 @@ Each one is off unless `config.json` says so; the web page can never switch one 
 
 A missing block, or a missing key, means off. Edit it as root and restart the service.
 
+**Power** (`admin.power`): on the Services tab, a Power card with *Reboot in 1 minute* (a bar with a countdown and a Cancel button
+shows on every page), *Reboot now*, and *Restart all services*. Each asks you to type the server's name. Restart-all goes through the
+watched services one by one (data stores first, nginx last), carries on after a failure, and never touches the dashboard, its DNS
+responder or tailscaled. To choose the order yourself: `"admin": { "power": true, "restart_order": ["redis-server", "app1", "nginx"] }`.
+Telegram hears about a reboot before it happens and when the server is back.
+
 ## Locking it down
 
 The service runs as root, so whoever can write to this folder can run code as root at the next restart. After development is finished:

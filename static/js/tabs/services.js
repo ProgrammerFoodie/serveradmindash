@@ -1,4 +1,5 @@
 import { api } from "../api.js";
+import { powerCard } from "../power.js";
 import { openLogs } from "../logview.js";
 import { badge, dataTable, el, fmtAgo, fmtBytes, fmtDateTime, fmtDuration, fmtPct, fmtUntil, isNum, panel } from "../util.js";
 
@@ -109,8 +110,10 @@ export default {
     const ok = (s) => s && s.data && !s.data.error;
     const note = (p, s, empty) => { if (!s) p.set(el("p", { class: "empty" }, "Waiting for data…")); else if (s.data.error) p.set(el("p", { class: "err" }, `Unavailable: ${s.data.error}`)); else return true; return false; };
 
+    const power = ctx.session.admin && ctx.session.admin.power ? powerCard(ctx) : null;     // only where config.json switches it on
+
     return {
-      el: el("div", { class: "rows" }, failed.el, sys.el, sup.el, tm.el, auditPanel.el),
+      el: el("div", { class: "rows" }, power ? power.el : null, failed.el, sys.el, sup.el, tm.el, auditPanel.el),
       update(live) {
         const s = live.sections;
         if (ctx.session.actions) refreshAudit(); else auditPanel.el.hidden = true;

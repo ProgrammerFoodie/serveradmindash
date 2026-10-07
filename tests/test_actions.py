@@ -72,14 +72,14 @@ class FoundationTest(unittest.TestCase):
         return self.audit.tail(50)
 
     def test_a_registered_action_is_audited_and_announced_like_the_built_in_ones(self):
-        self.acts.register("demo", lambda body: {"detail": "did it"}, lambda body: {"action": "demo.run", "target": body["what"]})
+        self.acts.register("demo", lambda body, who: {"detail": "did it"}, lambda body: {"action": "demo.run", "target": body["what"]})
         self.assertEqual(self.acts.perform("demo", {"what": "thing"}, WHO)["detail"], "did it")
         e = self.entries()[0]
         self.assertEqual((e["action"], e["target"], e["ok"], e["user"]), ("demo.run", "thing", True, "tester"))
         self.assertIn("demo.run on thing", self.events[-1][1])
 
     def test_a_refused_registered_action_is_audited_and_403_is_announced(self):
-        def handler(body):
+        def handler(body, who):
             raise ActionError(403, "not allowed")
         self.acts.register("demo", handler, lambda body: {"action": "demo.run", "target": "t"})
         with self.assertRaises(ActionError):
@@ -88,22 +88,44 @@ class FoundationTest(unittest.TestCase):
         self.assertEqual(self.events[-1][0], "warn")
 
     def test_register_rejects_duplicates_and_a_broken_label_cannot_stop_auditing(self):
-        self.acts.register("demo", lambda body: {"detail": "x"}, lambda body: body["missing"])
+        self.acts.register("demo", lambda body, who: {"detail": "x"}, lambda body: body["missing"])
         with self.assertRaises(ValueError):
-            self.acts.register("demo", lambda body: {}, lambda body: {})
+            self.acts.register("demo", lambda body, who: {}, lambda body: {})
         with self.assertRaises(ValueError):
-            self.acts.register("service", lambda body: {}, lambda body: {})
+            self.acts.register("service", lambda body, who: {}, lambda body: {})
         self.acts.perform("demo", {}, WHO)
         self.assertEqual(self.entries()[0]["action"], "demo")
 
     def test_labels_are_cleaned_for_the_audit_log_and_telegram(self):
-        self.acts.register("demo", lambda body: {"detail": "x"},
+        self.acts.register("demo", lambda body, who: {"detail": "x"},
                            lambda body: {"action": "demo.run", "target": "line1\nline2\x1b[0m " + "z" * 500})
         self.acts.perform("demo", {}, WHO)
         target = self.entries()[0]["target"]
         self.assertNotIn("\n", target)
         self.assertNotIn("\x1b", target)
         self.assertLessEqual(len(target), 200)
+
+    def test_a_handler_is_told_who_is_acting_and_a_job_only_kind_cannot_be_performed(self):
+        seen = []
+        self.acts.register("demo", lambda body, who: seen.append(who) or {"detail": "x"}, lambda body: {"action": "demo.run", "target": "t"})
+        self.acts.perform("demo", {}, WHO)
+        self.assertEqual(seen, [WHO])
+        self.acts.register("only-job", None, lambda body: {"action": "demo.job", "target": "t"})
+        with self.assertRaises(ActionError) as raised:
+            self.acts.perform("only-job", {}, WHO)
+        self.assertEqual(raised.exception.status, 400)
+        with self.assertRaises(ValueError):
+            self.acts.register("only-job", None, lambda body: {})
+        done = self.run_to_end_kind("only-job", lambda job: "fine")
+        self.assertEqual((done["state"], done["label"]), ("ok", "demo.job t"))
+
+    def run_to_end_kind(self, kind, work):
+        job = self.acts.run_job(kind, {}, WHO, work)
+        for _ in range(200):
+            if job.done and not self.acts._lock.locked():
+                break
+            threading.Event().wait(0.02)
+        return job.to_dict()
 
     def test_clean_and_require_confirmation(self):
         self.assertEqual(act.clean("a\nb\tc\x00d", 10), "a b c d")
@@ -124,7 +146,7 @@ class FoundationTest(unittest.TestCase):
             release.wait(5)
             return "all done"
 
-        self.acts.register("demo", lambda body: {"detail": "x"}, lambda body: {"action": "demo.job", "target": "t"})
+        self.acts.register("demo", lambda body, who: {"detail": "x"}, lambda body: {"action": "demo.job", "target": "t"})
         job = self.acts.run_job("demo", {}, WHO, work)
         self.assertTrue(started.wait(5))
         self.assertEqual(self.acts.jobs.get(job.id)["state"], "running")
@@ -153,7 +175,7 @@ class FoundationTest(unittest.TestCase):
         return job.to_dict()
 
     def test_a_job_that_raises_is_reported_and_releases_the_lock(self):
-        self.acts.register("demo", lambda body: {"detail": "x"}, lambda body: {"action": "demo.job", "target": "t"})
+        self.acts.register("demo", lambda body, who: {"detail": "x"}, lambda body: {"action": "demo.job", "target": "t"})
 
         def refuses(job):
             raise ActionError(403, "refused by rule")

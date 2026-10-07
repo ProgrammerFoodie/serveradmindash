@@ -87,6 +87,7 @@ class Actions:
         self._run, self._clock = runner, clock
         self.jobs = jobs or Jobs(clock=clock)
         self._handlers = {"service": self._service, "process": self._process}
+        self._who_aware: set[str] = set()                    # registered kinds whose handler also wants to know who is acting
         self._labels = {}                                    # kind -> function(body) -> {"action", "target"}; services and processes use _label
         self.protected = set(cfg["watch"]["protected"]) | ALWAYS_PROTECTED
         self._lock = threading.Lock()
@@ -95,13 +96,17 @@ class Actions:
     # ---- entry point -----------------------------------------------------------------------
 
     def register(self, kind: str, handler, label) -> None:
-        """Add a kind of action. `handler(body)` returns {"detail": text, ...} or raises ActionError;
+        """Add a kind of action. `handler(body, who)` returns {"detail": text, ...} or raises ActionError, where
+        `who` is {"user", "ip"}; pass None for a kind that is only ever started with run_job().
         `label(body)` returns {"action", "target"} for the audit log, built only from values that are safe to print
         (never a password, key or file content). Everything registered gets the lock, the rate limit, the audit
         entry and the Telegram message that services and processes get."""
-        if kind in self._handlers:
+        if kind in self._handlers or kind in self._labels:
             raise ValueError(f"action kind already registered: {kind}")
-        self._handlers[kind], self._labels[kind] = handler, label
+        if handler is not None:
+            self._handlers[kind] = handler
+            self._who_aware.add(kind)
+        self._labels[kind] = label
 
     def _label_for(self, kind: str, body: dict) -> dict:
         try:
@@ -157,7 +162,7 @@ class Actions:
                 raise ActionError(400, "unknown action")
             label = self._label_for(kind, body)
             try:
-                result = handler(body)
+                result = handler(body, who) if kind in self._who_aware else handler(body)
             except ActionError as e:
                 self._report(who, label, ok=False, outcome=e.message, status=e.status)
                 raise

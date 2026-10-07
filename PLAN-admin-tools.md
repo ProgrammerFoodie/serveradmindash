@@ -3,7 +3,7 @@
 Adds to the dashboard: **reboot and "restart all services"**, **users and active sessions** with account management,
 **SSH keys** (view, add, remove, reveal private keys) and an **editable config viewer**. No web terminal: the dashboard stays terminal-less.
 
-Status: **phase 13 done** (2026-10-07); phases 14-19 not started. Decisions below were made by the owner on 2026-10-07.
+Status: **phases 13 and 14 done** (2026-10-07); phases 15-19 not started. Decisions below were made by the owner on 2026-10-07.
 
 ### Phase 13: what was built, and how it differs from the text below
 - `config.json` `admin` block with the five switches (`dashboard/config.py`: `ADMIN_SWITCHES`, `admin_switches()`). Missing means off,
@@ -93,7 +93,26 @@ never appear in either.
 
 **UI.** One shared confirm dialog variant with "type X to confirm" (`ctx.confirmTyped(title, body, word)`).
 
-## Phase 14 - Power
+## Phase 14 - Power  (done)
+
+**As built, and where it differs from the text below:**
+- Code: `dashboard/power.py` (all the rules), `static/js/power.js` (the Power card), the shutdown bar in `static/js/app.js`.
+  Endpoints: `GET /api/power` (hostname, what is scheduled, the restart plan, a running job), `POST /api/power/reboot`,
+  `POST /api/power/cancel`, `POST /api/power/restart-all`; `/api/live` carries `power.scheduled` on every tab. All of them need the
+  `admin.power` switch (404 otherwise).
+- What is scheduled is read from logind's file `/run/systemd/shutdown/scheduled` (the same one `shutdown --show` reads) instead of
+  calling `busctl` every 5 seconds from every open page.
+- The Telegram message before a reboot is the generic action message (who, what, from where), not a separate synchronous one. For
+  an immediate reboot the notifier queue is drained first (`Notifier.drain`, up to 8 s), so the message leaves before the machine goes down.
+- An immediate reboot waits 1.5 s so the page gets its answer, then runs `shutdown -r now`. A reboot older than 15 minutes is not
+  reported as "back up" (a note left behind by a cancelled reboot must not claim credit for a later one).
+- `admin.restart_order` (optional list in `config.json`) overrides the built-in order; excluded units and units that are not on the
+  watch list are config errors. The always-excluded units are `server-dashboard`, `admin-dns` and `tailscaled`.
+- The page waits up to 6 minutes for a reboot, and reloads only after it has seen the server go away and come back.
+- Registered actions now receive `(body, who)`; a kind can be registered with `handler=None` when it only runs as a job.
+- Fixed on the way: a failed job used to mark its last running step as failed even when that step had succeeded (`Job.step_ok`).
+
+**The original plan for this phase:**
 
 **Reboot** - `POST /api/power/reboot {confirm, delay}`:
 - `confirm` must equal the hostname; `delay` is `0` or `60` seconds.

@@ -37,6 +37,12 @@ class Job:
             if len(self.steps) < MAX_STEPS:
                 self.steps.append({"label": _text(label, 200), "state": "running", "detail": _text(detail, 500)})
 
+    def step_ok(self, detail: str = "") -> None:
+        """Mark the current step as done. Needed for the last step of a job that fails for another reason:
+        finish(False) would otherwise blame the step that happened to be running."""
+        with self._lock:
+            self._close_current("ok", detail)
+
     def note(self, detail: str) -> None:
         """Set the text of the current step (for example the output of a check that failed)."""
         with self._lock:

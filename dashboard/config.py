@@ -27,6 +27,9 @@ _SCHEMA = {
 # Admin tools (phases 13-19). Each is off unless config.json says true: the web page can never switch one on,
 # because nothing in the program writes to config.json except `set-password`.
 ADMIN_SWITCHES = ("power", "users", "ssh_keys", "private_keys", "configs")
+# Units "restart all services" never touches: the dashboard and its DNS responder would kill their own job,
+# and tailscaled carries the only way in.
+RESTART_ALL_EXCLUDED = ("server-dashboard", "admin-dns", "tailscaled")
 
 
 class ConfigError(Exception):
@@ -58,12 +61,23 @@ def validate(cfg: dict) -> None:
         admin = cfg["admin"]
         if not isinstance(admin, dict):
             raise ConfigError("config.admin: expected an object")
-        unknown = set(admin) - set(ADMIN_SWITCHES)
+        unknown = set(admin) - set(ADMIN_SWITCHES) - {"restart_order"}
         if unknown:
-            raise ConfigError(f"config.admin: unknown key(s): {', '.join(sorted(unknown))}; use {', '.join(ADMIN_SWITCHES)}")
-        for key, value in admin.items():
-            if not isinstance(value, bool):
+            raise ConfigError(f"config.admin: unknown key(s): {', '.join(sorted(unknown))}; use {', '.join(ADMIN_SWITCHES)}, restart_order")
+        for key in ADMIN_SWITCHES:
+            if key in admin and not isinstance(admin[key], bool):
                 raise ConfigError(f"config.admin.{key}: expected true or false")
+        if "restart_order" in admin:
+            order = admin["restart_order"]
+            if not isinstance(order, list) or not all(isinstance(u, str) and u for u in order) or len(set(order)) != len(order):
+                raise ConfigError("config.admin.restart_order: expected a list of distinct unit names")
+            watched = {u.removesuffix(".service") for u in cfg["watch"]["systemd"]}
+            for unit in order:
+                name = unit.removesuffix(".service")
+                if name in RESTART_ALL_EXCLUDED:
+                    raise ConfigError(f"config.admin.restart_order: {name} is never restarted by 'restart all services'")
+                if name not in watched:
+                    raise ConfigError(f"config.admin.restart_order: {name} is not in watch.systemd")
 
     host, _, port = cfg["listen"].rpartition(":")
     if not host or not port.isdigit() or not 0 < int(port) < 65536:

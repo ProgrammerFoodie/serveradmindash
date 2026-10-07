@@ -29,6 +29,7 @@ export class FakeNode {
   insertBefore(node, ref) { this.detach(node); const i = this.children.indexOf(ref); this.children.splice(i < 0 ? this.children.length : i, 0, node); }
   get parentNode() { return this.parent ?? null; }
   get firstChild() { return this.children[0] ?? null; }
+  get isConnected() { return !this.detached; }          // a test sets `detached = true` to stand in for the page being left
   get disabled() { return "disabled" in this.attrs; }
   set disabled(v) { if (v) this.attrs.disabled = ""; else delete this.attrs.disabled; }
   get value() { return this.attrs.value ?? this._value ?? ""; }

@@ -47,6 +47,19 @@ class AdminSwitchesTest(unittest.TestCase):
             self.assertFalse(config.admin_switches({"admin": {"power": odd}})["power"], repr(odd))
         self.assertFalse(any(config.admin_switches({"admin": "everything"}).values()))
 
+    def test_restart_order_is_validated(self):
+        cfg = example()
+        watched = [u.removesuffix(".service") for u in cfg["watch"]["systemd"]]
+        cfg["admin"] = {"power": True, "restart_order": [watched[1], watched[0]]}
+        config.validate(cfg)
+        for bad in ("nginx", [], [""], [5], ["nope-not-watched"], [watched[0], watched[0]], ["tailscaled"], ["server-dashboard"], ["admin-dns.service"]):
+            cfg["admin"] = {"restart_order": bad}
+            if bad == []:
+                config.validate(cfg)                  # an empty list means "use the built-in order"
+                continue
+            with self.assertRaises(config.ConfigError, msg=repr(bad)):
+                config.validate(cfg)
+
     def test_bad_blocks_are_rejected(self):
         for bad in ("on", ["power"], {"power": "yes"}, {"power": 1}, {"powre": True}, {"power": None}):
             cfg = example()

@@ -30,6 +30,15 @@ class JobTest(unittest.TestCase):
         self.assertEqual([(s["state"], s["detail"]) for s in d["steps"]], [("failed", "exited with 1"), ("failed", "stopped here")])
         self.assertEqual(d["state"], "failed")
 
+    def test_a_step_that_succeeded_is_not_blamed_when_the_job_fails_for_another_reason(self):
+        job = self.jobs.create("x", "x", "u")
+        job.step("bad")
+        job.step_failed("it broke")
+        job.step("good")
+        job.step_ok()
+        job.finish(False, "1 failed")
+        self.assertEqual([s["state"] for s in job.to_dict()["steps"]], ["failed", "ok"])
+
     def test_finish_is_final(self):
         job = self.jobs.create("x", "x", "u")
         job.finish(False, "first")

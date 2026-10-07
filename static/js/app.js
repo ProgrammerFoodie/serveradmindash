@@ -3,7 +3,7 @@
 import { api, AuthError } from "./api.js";
 import { askConfirm } from "./confirm.js";
 import { watchIdle } from "./idle.js";
-import { append, clear, el, fmtAgo, fmtDuration, store } from "./util.js";
+import { append, clear, el, fmtAgo, fmtCountdown, fmtDuration, store } from "./util.js";
 import overview from "./tabs/overview.js";
 import processes from "./tabs/processes.js";
 import services from "./tabs/services.js";
@@ -18,6 +18,7 @@ const REFRESH_MS = 5000;
 const view = document.getElementById("view");
 const tabsNav = document.getElementById("tabs");
 const statusbar = document.getElementById("statusbar");
+const powerBarEl = document.getElementById("powerbar");
 const dialog = document.getElementById("dlg");
 const confirmDialog = document.getElementById("confirm");
 const toastEl = document.getElementById("toast");
@@ -54,7 +55,8 @@ const ctx = {
 };
 dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });   // click on the backdrop
 
-ctx.session = { actions: false, protected: [] };
+ctx.api = api;
+ctx.session = { actions: false, protected: [], admin: {} };
 ctx.closeDialog = () => { if (dialog.open) dialog.close(); };
 ctx.refreshNow = () => tick();
 
@@ -83,7 +85,7 @@ ctx.act = async (path, body) => {
   try {
     const result = await api.post(path, body);
     ctx.toast(result.detail || "Done", "ok");
-    if (result.reconnect) waitForServer();
+    if (result.reconnect) waitForServer({ rebooting: !!result.rebooting });
     else ctx.refreshNow();
     return result;
   } catch (e) {
@@ -96,14 +98,21 @@ ctx.act = async (path, body) => {
 };
 ctx.toastHide = () => { toastEl.hidden = true; };
 
-/** After the dashboard restarts itself: wait until it answers again, then reload the page. */
-async function waitForServer() {
-  ctx.toast("Restarting… this page reloads when it is back.", "warn");
-  for (let i = 0; i < 40; i++) {
+/** After the dashboard restarts itself, or the whole server reboots: wait until it answers again, then reload the page. */
+async function waitForServer({ rebooting = false } = {}) {
+  ctx.toast(rebooting ? "Rebooting… this page reloads when the server is back." : "Restarting… this page reloads when it is back.", "warn", rebooting);
+  const attempts = rebooting ? 240 : 40;                                  // 1.5 s each: a reboot gets up to 6 minutes
+  let sawDown = false;
+  for (let i = 0; i < attempts; i++) {
     await new Promise((r) => setTimeout(r, 1500));
-    try { if ((await fetch("/healthz", { cache: "no-store" })).ok && i > 1) { location.reload(); return; } } catch { /* still down */ }
+    try {
+      const answering = (await fetch("/healthz", { cache: "no-store" })).ok;
+      // A reboot is over only after the server was seen gone and then back; the old server may still answer for a moment.
+      if (answering && (rebooting ? sawDown : i > 1)) { location.reload(); return; }
+    } catch { sawDown = true; }                                           // still down
+    if (rebooting && !sawDown && i > 40) { ctx.toast("The server is still answering. The reboot may not have started.", "warn"); return; }
   }
-  ctx.toast("The dashboard did not come back within a minute. Check the server.", "bad");
+  ctx.toast(rebooting ? "The server did not come back within six minutes. Check it in the Linode console." : "The dashboard did not come back within a minute. Check the server.", "bad");
 }
 
 let toastTimer = null;
@@ -154,6 +163,7 @@ async function tick() {
       if (mine === active) {                         // the user may have switched tab while this was in flight
         mine.inst.update(live);
         renderBanner(live.alerts || []);
+        renderPowerBar(live.power);
       }
     } catch (e) {
       if (!(e instanceof AuthError)) console.warn("refresh failed:", e.message);
@@ -170,6 +180,39 @@ function paintStatus() {
 }
 setInterval(paintStatus, 1000);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+
+// ---- scheduled shutdown bar --------------------------------------------------------------------
+
+let shutdown = null;          // {mode, at (ms on this computer's clock), waiting}
+let countdownEl = null;
+
+function renderPowerBar(power) {
+  const s = power && power.scheduled;
+  if (!s) { shutdown = null; powerBarEl.hidden = true; return; }
+  const at = Date.now() + s.in_s * 1000;
+  if (!shutdown || shutdown.mode !== s.mode || Math.abs(shutdown.at - at) > 3000) {     // rebuild only when something changed, so a click on Cancel is never lost
+    shutdown = { mode: s.mode, at, waiting: shutdown ? shutdown.waiting : false };
+    countdownEl = el("b", null, "");
+    const cancel = ctx.session.admin.power
+      ? el("button", { class: "btn small", type: "button", onclick: () => ctx.act("/api/power/cancel", {}) }, "Cancel") : null;
+    powerBarEl.replaceChildren(el("div", { class: "statusbar-box warn" }, el("div", { class: "powerbar-row" },
+      el("span", { class: "pill warn" }, s.label.toUpperCase()), el("span", null, "scheduled in ", countdownEl),
+      s.requested_by ? el("span", { class: "muted" }, `requested by ${s.requested_by}`) : null, el("span", { class: "spacer" }), cancel)));
+    powerBarEl.hidden = false;
+  }
+  paintCountdown();
+}
+
+function paintCountdown() {
+  if (!shutdown) return;
+  const left = Math.max(0, Math.round((shutdown.at - Date.now()) / 1000));
+  countdownEl.textContent = fmtCountdown(left);
+  if (left === 0 && !shutdown.waiting && ["reboot", "kexec"].includes(shutdown.mode)) {
+    shutdown.waiting = true;
+    waitForServer({ rebooting: true });
+  }
+}
+setInterval(paintCountdown, 1000);
 
 // ---- alert statusbar -----------------------------------------------------------------------------
 
@@ -232,7 +275,7 @@ document.getElementById("signout").addEventListener("click", () => api.signOut()
   try {
     const session = await api.session();
     ctx.thresholds = session.thresholds || {};
-    ctx.session = { actions: !!session.actions, protected: session.protected || [] };
+    ctx.session = { actions: !!session.actions, protected: session.protected || [], admin: session.admin || {} };
     document.getElementById("who").textContent = `${session.user} @ ${session.host}`;
     watchIdle(session.idle_s, { onIdle: () => api.signOut("idle"), ping: () => api.ping() });
   } catch (e) {

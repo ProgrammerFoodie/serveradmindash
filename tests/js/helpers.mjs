@@ -1,6 +1,6 @@
 // Checks the pure helper functions of the front end with plain Node (no browser, no packages).
 import { niceBytesMax, niceMax, nearest } from "../../static/js/chart.js";
-import { fmtAgo, fmtBytes, fmtDuration, fmtPct, fmtUntil, level } from "../../static/js/util.js";
+import { fmtAgo, fmtBytes, fmtCountdown, fmtDuration, fmtPct, fmtUntil, level } from "../../static/js/util.js";
 
 let failed = 0;
 const eq = (actual, expected, label) => {
@@ -37,6 +37,9 @@ for (const on of [true, "yes", 1]) eq("disabled" in el("button", { disabled: on 
 eq("hidden" in el("p", { hidden: "" }).attrs, false, "hidden empty string");
 eq(el("p", { style: "color:red" }).attrs.style, undefined, "inline style is never set");
 eq(el("p", { title: "x" }).attrs.title, "x", "ordinary attribute");
+
+eq(fmtCountdown(42), "0:42", "countdown seconds"); eq(fmtCountdown(60), "1:00", "countdown minute"); eq(fmtCountdown(725), "12:05", "countdown minutes"); eq(fmtCountdown(3723), "1:02:03", "countdown hours");
+eq(fmtCountdown(0), "now", "countdown zero"); eq(fmtCountdown(-5), "now", "countdown negative"); eq(fmtCountdown(0.4), "now", "countdown rounds to zero"); eq(fmtCountdown(NaN), "now", "countdown NaN"); eq(fmtCountdown(null), "now", "countdown null");
 
 // Idle tracker: a fake clock stands in for Date.now.
 const { idleTracker, PING_MS } = await import("../../static/js/idle.js");

@@ -198,3 +198,9 @@ body.dragging-cards { user-select: none; cursor: grabbing; }
 .chart-block .chart-head { margin-bottom: 2px; }
 .chart-block .chart { height: 118px; }
 .chart-block .chart-note { margin: 2px 0 0; }
+
+/* ---- power: scheduled shutdown bar and the restart-all job ---- */
+.powerbar-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.job { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-soft); display: grid; gap: 6px; }
+.job-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.job-steps .sub { margin: 2px 0 0 0; overflow-wrap: anywhere; }

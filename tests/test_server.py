@@ -95,6 +95,7 @@ class ServerTest(unittest.TestCase):
     limiter = None
     alerts = None
     actions = None
+    power = None
 
     @classmethod
     def setUpClass(cls):
@@ -111,7 +112,7 @@ class ServerTest(unittest.TestCase):
         self.sched = FakeScheduler()
         self.history = History(os.path.join(self.tmp.name, "h.db"))
         self.sessions = auth.Sessions(os.path.join(self.tmp.name, "a.db"), "fp", hours=1)
-        self.app = App(cfg, self.sched, self.history, self.sessions, self.limiter, alerts=self.alerts, actions=self.actions)
+        self.app = App(cfg, self.sched, self.history, self.sessions, self.limiter, alerts=self.alerts, actions=self.actions, power=self.power)
         self.server = make_server(self.app, self.max_connections)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -467,6 +468,116 @@ class ActionApiTest(ServerTest):
         self.assertEqual((s["actions"], s["protected"]), (True, ["nginx", "ssh"]))
         self.assertEqual(self.req("GET", "/api/audit?limit=7", token=token)[2]["entries"][0]["limit"], 7)
         self.assertEqual(self.req("GET", "/api/audit?limit=99999", token=token)[2]["entries"][0]["limit"], 200)
+
+
+class PowerApiTest(ServerTest):
+    """Reboot, cancel and restart-all through the real server, with the real Actions and Power and a fake system underneath."""
+
+    def setUp(self):
+        from dashboard.actions import Actions
+        from dashboard.audit import Audit
+        from dashboard.power import Power
+
+        self.work = tempfile.TemporaryDirectory()
+        self.addCleanup(self.work.cleanup)
+        self.ran = []
+        self.scheduled = os.path.join(self.work.name, "scheduled")
+        self.boot = os.path.join(self.work.name, "boot_id")
+        with open(self.boot, "w") as f:
+            f.write("boot-1")
+
+        def runner(args, timeout=5.0, ok_codes=(0,)):
+            self.ran.append(args)
+            return "active\n" if args[:2] == ["systemctl", "is-active"] else ""
+
+        cfg = json.loads(config.EXAMPLE_PATH.read_text())
+
+        class Sched:
+            def get(self, name):
+                return 1.0, {"watched": [{"name": u.removesuffix(".service"), "exists": True} for u in cfg["watch"]["systemd"]]}
+
+            def refresh(self, name):
+                return {}
+
+        self.actions = Actions(cfg, Sched(), None, Audit(os.path.join(self.work.name, "audit.jsonl")), runner=runner)
+        self.power = Power(cfg, self.actions, Sched(), None, self.actions.audit, self.work.name, runner=runner, hostname="myhost",
+                           scheduled_path=self.scheduled, boot_id_path=self.boot, defer=lambda fn, s: None)
+        self.power.register()
+        super().setUp()
+
+    def post(self, path, body, token, csrf):
+        return self.req("POST", path, body, token=token, csrf=csrf)
+
+    def test_everything_needs_a_session_and_the_csrf_token(self):
+        for path in ("/api/power/reboot", "/api/power/cancel", "/api/power/restart-all"):
+            self.assertEqual(self.req("POST", path, {"confirm": "myhost"}, csrf="x")[0], 401, path)
+        self.assertEqual(self.req("GET", "/api/power")[0], 401)
+        token, csrf = self.signed_in()
+        for path in ("/api/power/reboot", "/api/power/cancel", "/api/power/restart-all"):
+            self.assertEqual(self.req("POST", path, {"confirm": "myhost"}, token=token)[0], 403, path)
+            self.assertEqual(self.req("POST", path, {"confirm": "myhost"}, token=token, csrf="wrong")[0], 403, path)
+        self.assertEqual(self.ran, [])
+
+    def test_a_switched_off_tool_does_not_exist(self):
+        token, csrf = self.signed_in()
+        self.app.admin = dict(self.app.admin, power=False)
+        for path in ("/api/power/reboot", "/api/power/cancel", "/api/power/restart-all"):
+            self.assertEqual(self.post(path, {"confirm": "myhost"}, token, csrf)[0], 404, path)
+        self.assertEqual(self.req("GET", "/api/power", token=token)[0], 404)
+        self.assertEqual(self.ran, [])
+
+    def test_describe_lists_the_plan_and_what_is_never_restarted(self):
+        token, _ = self.signed_in()
+        status, _, body = self.req("GET", "/api/power", token=token)
+        self.assertEqual(status, 200)
+        self.assertEqual((body["hostname"], body["delays"], body["scheduled"], body["job"]), ("myhost", [0, 60], None, None))
+        self.assertTrue(body["restart"]["units"])
+        for never in ("server-dashboard", "admin-dns", "tailscaled"):
+            self.assertNotIn(never, body["restart"]["units"])
+
+    def test_reboot_needs_the_typed_hostname(self):
+        token, csrf = self.signed_in()
+        self.assertEqual(self.post("/api/power/reboot", {"confirm": "wrong", "delay": 60}, token, csrf)[0], 400)
+        self.assertEqual(self.post("/api/power/reboot", {"delay": 60}, token, csrf)[0], 400)
+        self.assertEqual(self.ran, [])
+        status, _, body = self.post("/api/power/reboot", {"confirm": "myhost", "delay": 60}, token, csrf)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.ran, [["shutdown", "-r", "+1", "Reboot from the admin dashboard by admin"]])
+        self.assertIn("1 minute", body["detail"])
+
+    def test_cancel_only_when_something_is_scheduled(self):
+        token, csrf = self.signed_in()
+        self.assertEqual(self.post("/api/power/cancel", {}, token, csrf)[0], 409)
+        with open(self.scheduled, "w") as f:
+            f.write(f"USEC={int((time.time() + 40) * 1_000_000)}\nMODE=reboot\n")
+        self.assertEqual(self.post("/api/power/cancel", {}, token, csrf)[0], 200)
+        self.assertEqual(self.ran, [["shutdown", "-c"]])
+
+    def test_live_data_carries_a_scheduled_shutdown_to_every_page(self):
+        token, _ = self.signed_in()
+        self.assertEqual(self.req("GET", "/api/live?tab=overview", token=token)[2]["power"], {"scheduled": None})
+        with open(self.scheduled, "w") as f:
+            f.write(f"USEC={int((time.time() + 40) * 1_000_000)}\nMODE=reboot\nWALL_MESSAGE=soon\n")
+        scheduled = self.req("GET", "/api/live?tab=network", token=token)[2]["power"]["scheduled"]
+        self.assertEqual((scheduled["mode"], scheduled["message"]), ("reboot", "soon"))
+        self.assertTrue(38 <= scheduled["in_s"] <= 40)
+
+    def test_restart_all_runs_as_a_job_that_the_page_can_follow(self):
+        token, csrf = self.signed_in()
+        self.assertEqual(self.post("/api/power/restart-all", {"confirm": "nope"}, token, csrf)[0], 400)
+        status, _, body = self.post("/api/power/restart-all", {"confirm": "myhost"}, token, csrf)
+        self.assertEqual(status, 200)
+        job = None
+        for _ in range(200):
+            job = self.req("GET", f"/api/jobs/{body['job']}", token=token)[2]
+            if job["state"] != "running":
+                break
+            time.sleep(0.02)
+        self.assertEqual(job["state"], "ok")
+        self.assertEqual(job["started_by"], "admin")
+        self.assertTrue(job["steps"] and all(s["state"] == "ok" for s in job["steps"]))
+        restarted = [a[3] for a in self.ran if a[:2] == ["systemctl", "restart"]]
+        self.assertEqual(restarted, [f"{s['label'].split()[1]}.service" for s in job["steps"]])
 
 
 class JobApiTest(ServerTest):

@@ -91,6 +91,16 @@ class Notifier:
             self.dropped += 1
             return False
 
+    def drain(self, timeout: float = 8.0) -> bool:
+        """Wait until every queued message has been delivered or given up on, for at most `timeout` seconds
+        (used before a reboot, so the message about it leaves first). True if the queue is empty."""
+        if not self.enabled or not self._thread:
+            return True
+        end = time.monotonic() + timeout
+        while self._queue.unfinished_tasks and time.monotonic() < end:
+            time.sleep(0.05)
+        return not self._queue.unfinished_tasks
+
     def send_now(self, text: str) -> tuple[bool, str | None]:
         """Send immediately and report the outcome (for the "send test alert" button)."""
         if not self.enabled:
@@ -110,7 +120,10 @@ class Notifier:
                 text = self._queue.get(timeout=1)
             except queue.Empty:
                 continue
-            self._deliver(text)
+            try:
+                self._deliver(text)
+            finally:
+                self._queue.task_done()
 
     def _deliver(self, text: str) -> None:
         for attempt, delay in enumerate(self._delays):

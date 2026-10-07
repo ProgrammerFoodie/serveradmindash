@@ -119,6 +119,7 @@ def cmd_serve(args) -> int:
     from .alertmanager import AlertManager, Notifier
     from .audit import Audit
     from .history import History
+    from .power import Power
     from .scheduler import Scheduler
     from .server import App, make_server
 
@@ -141,8 +142,11 @@ def cmd_serve(args) -> int:
     notifier = Notifier(cfg)
     alerts = AlertManager(cfg, notifier, history, state_path=config.DATA_DIR / "alert_state.json")
     scheduler = Scheduler(cfg, history, alerts=alerts)
-    actions = Actions(cfg, scheduler, alerts, Audit(config.DATA_DIR / "audit.jsonl"))
-    server = make_server(App(cfg, scheduler, history, sessions, alerts=alerts, actions=actions))
+    audit = Audit(config.DATA_DIR / "audit.jsonl")
+    actions = Actions(cfg, scheduler, alerts, audit)
+    power = Power(cfg, actions, scheduler, alerts, audit, config.DATA_DIR)
+    power.register()
+    server = make_server(App(cfg, scheduler, history, sessions, alerts=alerts, actions=actions, power=power))
 
     def shut_down(signum, _frame):
         log.info("signal %s: shutting down", signal.Signals(signum).name)
@@ -153,6 +157,7 @@ def cmd_serve(args) -> int:
     signal.signal(signal.SIGINT, shut_down)
     notifier.start()
     scheduler.start()
+    power.on_start()
     log.info("dashboard %s listening on http://%s as %s", __version__, cfg["listen"], cfg["public_host"])
     try:
         server.serve_forever()

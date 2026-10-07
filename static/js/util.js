@@ -69,6 +69,14 @@ export function fmtDuration(seconds) {
   return `${s}s`;
 }
 
+/** A countdown as people read a clock: 0:42, 12:05, 1:02:03; "now" at zero. */
+export function fmtCountdown(seconds) {
+  const left = Math.max(0, Math.round(seconds));
+  if (!isNum(seconds) || left === 0) return "now";
+  const h = Math.floor(left / 3600), m = Math.floor((left % 3600) / 60), sec = String(left % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
 export function fmtAgo(ts, now = Date.now() / 1000) {
   if (!isNum(ts)) return DASH;
   const d = now - ts;
